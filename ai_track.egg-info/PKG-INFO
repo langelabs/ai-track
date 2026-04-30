@@ -1,3 +1,27 @@
+Metadata-Version: 2.4
+Name: ai-track
+Version: 0.1.0
+Summary: Universal AI runtime for local and remote inference.
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: openai>=1.0
+Requires-Dist: pydantic>=2.0
+Requires-Dist: numpy>=1.26
+Requires-Dist: pillow>=10.0
+Requires-Dist: huggingface-hub>=0.24
+Requires-Dist: tqdm>=4.66
+Provides-Extra: macos
+Requires-Dist: mlx-lm>=0.24; sys_platform == "darwin" and extra == "macos"
+Requires-Dist: mlx-vlm>=0.4; sys_platform == "darwin" and extra == "macos"
+Requires-Dist: mlx-audio>=0.4; sys_platform == "darwin" and extra == "macos"
+Requires-Dist: mflux>=0.5; sys_platform == "darwin" and extra == "macos"
+Provides-Extra: cuda
+Requires-Dist: torch>=2.2; sys_platform == "linux" and extra == "cuda"
+Requires-Dist: vllm>=0.11; sys_platform == "linux" and extra == "cuda"
+Requires-Dist: transformers>=4.45; sys_platform == "linux" and extra == "cuda"
+Requires-Dist: accelerate>=1.0; sys_platform == "linux" and extra == "cuda"
+Requires-Dist: diffusers>=0.30; sys_platform == "linux" and extra == "cuda"
+
 [![CI](https://github.com/langelabs/ai-track/actions/workflows/ci.yml/badge.svg)](https://github.com/langelabs/ai-track/actions/workflows/ci.yml)
 
 ![ai-track logo](assets/logo_light.png)
@@ -153,34 +177,16 @@ backends.
 uv sync
 ```
 
-If you want to install from PyPI with `pip`, use:
-
-```bash
-pip install ai-track
-```
-
 ### macOS MLX extras
 
 ```bash
 uv sync --extra macos
 ```
 
-For `pip`:
-
-```bash
-pip install "ai-track[macos]"
-```
-
 ### CUDA extras
 
 ```bash
 uv sync --extra cuda
-```
-
-For `pip`:
-
-```bash
-pip install "ai-track[cuda]"
 ```
 
 The CUDA extra brings in the GPU-oriented runtime stack, including vLLM,

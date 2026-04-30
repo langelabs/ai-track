@@ -1,0 +1,23 @@
+openai>=1.0
+pydantic>=2.0
+numpy>=1.26
+pillow>=10.0
+huggingface-hub>=0.24
+tqdm>=4.66
+
+[cuda]
+
+[cuda:sys_platform == "linux"]
+torch>=2.2
+vllm>=0.11
+transformers>=4.45
+accelerate>=1.0
+diffusers>=0.30
+
+[macos]
+
+[macos:sys_platform == "darwin"]
+mlx-lm>=0.24
+mlx-vlm>=0.4
+mlx-audio>=0.4
+mflux>=0.5
