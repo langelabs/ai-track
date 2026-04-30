@@ -1,33 +1,26 @@
 from __future__ import annotations
 
-import unittest
+
+def test_track_exports_hub_and_inference() -> None:
+    import track
+
+    assert hasattr(track, "hub")
+    assert hasattr(track, "inference")
 
 
-class PublicApiTests(unittest.TestCase):
-    """Validate the current public import surface."""
+def test_inference_package_excludes_routing_layer() -> None:
+    from track import inference
 
-    def test_track_exports_hub_and_inference(self) -> None:
-        import track
-
-        self.assertTrue(hasattr(track, "hub"))
-        self.assertTrue(hasattr(track, "inference"))
-
-    def test_inference_package_excludes_routing_layer(self) -> None:
-        from track import inference
-
-        self.assertTrue(hasattr(inference, "LocalAI"))
-        self.assertTrue(hasattr(inference, "TranscriptionModelConfig"))
-        self.assertTrue(hasattr(inference, "TranscriptionResult"))
-        self.assertFalse(hasattr(inference, "ModelRouter"))
-        self.assertFalse(hasattr(inference, "resolve_client"))
-
-    def test_hub_package_exposes_router(self) -> None:
-        from track import hub
-
-        self.assertTrue(hasattr(hub, "Hub"))
-        self.assertTrue(hasattr(hub, "resolve_client"))
-        self.assertTrue(hasattr(hub, "get_client"))
+    assert hasattr(inference, "LocalAI")
+    assert hasattr(inference, "TranscriptionModelConfig")
+    assert hasattr(inference, "TranscriptionResult")
+    assert not hasattr(inference, "ModelRouter")
+    assert not hasattr(inference, "resolve_client")
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_hub_package_exposes_router() -> None:
+    from track import hub
+
+    assert hasattr(hub, "Hub")
+    assert hasattr(hub, "resolve_client")
+    assert hasattr(hub, "get_client")

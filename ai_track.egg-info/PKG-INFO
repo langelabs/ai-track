@@ -177,16 +177,34 @@ backends.
 uv sync
 ```
 
+If you want to install from PyPI with `pip`, use:
+
+```bash
+pip install ai-track
+```
+
 ### macOS MLX extras
 
 ```bash
 uv sync --extra macos
 ```
 
+For `pip`:
+
+```bash
+pip install "ai-track[macos]"
+```
+
 ### CUDA extras
 
 ```bash
 uv sync --extra cuda
+```
+
+For `pip`:
+
+```bash
+pip install "ai-track[cuda]"
 ```
 
 The CUDA extra brings in the GPU-oriented runtime stack, including vLLM,
@@ -197,7 +215,7 @@ Transformers, Diffusers, and PyTorch-based helpers.
 Run the full unit suite with:
 
 ```bash
-uv run python -m unittest discover -s tests
+uv run pytest -q tests
 ```
 
 The tests focus on:

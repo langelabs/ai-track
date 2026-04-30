@@ -191,7 +191,7 @@ Transformers, Diffusers, and PyTorch-based helpers.
 Run the full unit suite with:
 
 ```bash
-uv run python -m unittest discover -s tests
+uv run pytest -q tests
 ```
 
 The tests focus on:
