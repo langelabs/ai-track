@@ -1,6 +1,17 @@
+.gitignore
 MANIFEST.in
 README.md
 pyproject.toml
+uv.lock
+.github/workflows/ci.yml
+.github/workflows/publish.yml
+.idea/.gitignore
+.idea/ai-track.iml
+.idea/misc.xml
+.idea/modules.xml
+.idea/vcs.xml
+.idea/inspectionProfiles/Project_Default.xml
+.idea/inspectionProfiles/profiles_settings.xml
 ai_track.egg-info/PKG-INFO
 ai_track.egg-info/SOURCES.txt
 ai_track.egg-info/dependency_links.txt

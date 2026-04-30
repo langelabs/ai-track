@@ -159,6 +159,12 @@ If you want to install from PyPI with `pip`, use:
 pip install ai-track
 ```
 
+For the latest main-branch publish, use:
+
+```bash
+pip install --pre ai-track
+```
+
 ### macOS MLX extras
 
 ```bash
