@@ -1,0 +1,28 @@
+[project]
+name = "ai-track"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+  "openai>=1.0",
+  "pydantic>=2.0",
+  "numpy>=1.26",
+  "pillow>=10.0",
+  "huggingface-hub>=0.24",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+macos = [
+  "mlx-lm>=0.24; sys_platform == 'darwin'",
+  "mlx-vlm>=0.4; sys_platform == 'darwin'",
+  "mlx-audio>=0.4; sys_platform == 'darwin'",
+  "mflux>=0.5; sys_platform == 'darwin'",
+]
+cuda = [
+  "torch>=2.2; sys_platform == 'linux'",
+  "vllm>=0.11; sys_platform == 'linux'",
+  "transformers>=4.45; sys_platform == 'linux'",
+  "accelerate>=1.0; sys_platform == 'linux'",
+  "diffusers>=0.30; sys_platform == 'linux'",
+]
