@@ -1,4 +1,4 @@
-# ai-track
+![ai-track logo](assets/logo_light.png)
 
 `ai-track` is a universal AI runtime library for local and remote inference.
 It chooses the best available execution tier automatically, keeps the core
