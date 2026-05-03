@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from track.inference.ai_model import AiModel
-
-if TYPE_CHECKING:
-    from track.inference.embedding.base import BaseEmbeddingModel
+from track.contracts import AiModel, BaseEmbeddingModel
 
 
 def create_embedding_model(

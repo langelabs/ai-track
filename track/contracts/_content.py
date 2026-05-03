@@ -1,30 +1,34 @@
-"""Shared types for the inference runtime."""
+"""Multimodal content contracts."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Literal
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-@dataclass(frozen=True, slots=True)
-class TextContentPart:
+
+class TextContentPart(BaseModel):
     """Represent a text segment inside a multimodal message."""
+
+    model_config = ConfigDict(frozen=True)
 
     type: Literal["text"] = "text"
     text: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class ImagePathContentPart:
+class ImagePathContentPart(BaseModel):
     """Represent a local image path inside a multimodal message."""
+
+    model_config = ConfigDict(frozen=True)
 
     type: Literal["image_path"] = "image_path"
     image_path: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class AudioPathContentPart:
+class AudioPathContentPart(BaseModel):
     """Represent a local audio path inside a multimodal message."""
+
+    model_config = ConfigDict(frozen=True)
 
     type: Literal["audio_path"] = "audio_path"
     audio_path: str = ""
@@ -35,14 +39,16 @@ ContentPart = TextContentPart | ImagePathContentPart | AudioPathContentPart
 """Union for all supported content parts."""
 
 
-@dataclass(frozen=True, slots=True)
-class Message:
+class Message(BaseModel):
     """Represent a chat message with strict multimodal content."""
 
-    role: Literal["system", "user", "assistant"]
-    content: list[ContentPart] = field(default_factory=list)
+    model_config = ConfigDict(frozen=True)
 
-    def __post_init__(self) -> None:
+    role: Literal["system", "user", "assistant"]
+    content: list[ContentPart] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_message(self) -> "Message":
         """Enforce prototype constraints for multimodal messages."""
         if not self.content:
             raise ValueError("Message content must contain at least one content part.")
@@ -50,6 +56,7 @@ class Message:
             has_non_text_part = any(not isinstance(part, TextContentPart) for part in self.content)
             if has_non_text_part:
                 raise ValueError("Assistant messages may only contain text content parts.")
+        return self
 
     @classmethod
     def user(cls, text: str, image_path: str | None = None) -> "Message":

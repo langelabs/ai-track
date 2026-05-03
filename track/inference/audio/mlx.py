@@ -10,10 +10,11 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from track.inference.audio.base import AudioGenerationResult, BaseAudioModel
+from track.contracts import AudioGenerationResult, BaseAudioModel
 from track.inference.audio.models import AudioModelConfig
-from track.inference.audio.utils import audio_chunks_to_wav, normalize_audio_response_format, parse_audio_duration
-from track.inference.model_storage import resolve_model_location
+from track.utils import normalize_audio_response_format, parse_audio_duration
+from track.utils.audio import audio_chunks_to_wav
+from track.utils.model_storage import resolve_model_location
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +24,8 @@ def _load_mlx_audio_load() -> object:
     try:
         tts_utils_module = import_module("mlx_audio.tts.utils")
     except ModuleNotFoundError as exc:
-        def _missing(*_: object, **__: object) -> Any:
-            raise RuntimeError("mlx-audio is not installed.") from exc
+        def _missing(*_: object, _exc: ModuleNotFoundError = exc, **__: object) -> Any:
+            raise RuntimeError("mlx-audio is not installed.") from _exc
 
         return _missing
     if hasattr(tts_utils_module, "load"):
@@ -136,7 +137,7 @@ class MLXAudioModel(BaseAudioModel):
         normalized_format = normalize_audio_response_format(response_format)
         resolved_voice = self.resolve_voice(voice)
         generated_results = list(self._model.generate(text=text, voice=resolved_voice))
-        wav_bytes, sample_count = _audio_chunks_to_wav(
+        wav_bytes, sample_count = audio_chunks_to_wav(
             (result.audio for result in generated_results),
             self.sample_rate,
         )

@@ -8,7 +8,7 @@ from queue import Queue
 from threading import Thread
 from typing import Any
 
-from track.inference.image.base import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
+from track.contracts import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
 
 
 class DiffusersFluxImageModel(BaseImageGenerationModel):

@@ -1,14 +1,16 @@
-"""Base abstractions for local audio backends."""
+"""Audio backend contracts."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict
 
 
-@dataclass(frozen=True, slots=True)
-class AudioGenerationResult:
+class AudioGenerationResult(BaseModel):
     """Describe one synthesized audio response returned by a local backend."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     audio: bytes
     sample_rate: int

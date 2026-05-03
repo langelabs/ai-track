@@ -1,17 +1,19 @@
-"""Base abstractions for local chat backends."""
+"""Chat backend contracts."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from collections.abc import Iterator
 
-from track.inference.types import Message
+from pydantic import BaseModel, ConfigDict
+
+from ._content import Message
 
 
-@dataclass(frozen=True, slots=True)
-class ChatGenerationConfig:
+class ChatGenerationConfig(BaseModel):
     """Control token sampling for chat generation."""
+
+    model_config = ConfigDict(frozen=True)
 
     max_tokens: int = 256
     temperature: float = 0.0

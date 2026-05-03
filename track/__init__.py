@@ -1,17 +1,16 @@
-"""Top-level package for the ai-track runtime."""
+"""Top-level package exports for ai-track."""
 
 from __future__ import annotations
 
-from importlib import import_module
-from typing import Any
+from . import hub, inference
+from .contracts import AiModel, AiModelCapabilities, AiModelState
+from .hub import AiHub
 
-__all__ = ["hub", "inference"]
-
-
-def __getattr__(name: str) -> Any:
-    """Lazily expose subpackages."""
-    if name == "hub":
-        return import_module("track.hub")
-    if name == "inference":
-        return import_module("track.inference")
-    raise AttributeError(f"module 'track' has no attribute '{name}'")
+__all__ = [
+    "AiHub",
+    "AiModel",
+    "AiModelCapabilities",
+    "AiModelState",
+    "hub",
+    "inference",
+]

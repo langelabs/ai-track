@@ -5,8 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from track.inference.ai_model import AiModel
-from track.inference.chat.base import BaseChatLLM
+from track.contracts import AiModel, BaseChatLLM
 
 
 def create_chat_model(

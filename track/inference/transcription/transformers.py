@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from track.inference.transcription.base import BaseTranscriptionModel, TranscriptionResult
-from track.inference.transcription.utils import prepare_audio_input
+from track.contracts import BaseTranscriptionModel, TranscriptionResult
+from track.utils import prepare_audio_input
 
 logger = logging.getLogger(__name__)
 

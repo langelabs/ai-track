@@ -8,10 +8,10 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Callable
 
-from track.inference.audio.base import AudioGenerationResult, BaseAudioModel
+from track.contracts import AudioGenerationResult, BaseAudioModel
 from track.inference.audio.models import AudioModelConfig
-from track.inference.audio.utils import audio_chunks_to_wav, normalize_audio_response_format, parse_audio_duration
-from track.inference.model_storage import resolve_model_location
+from track.utils import normalize_audio_response_format, parse_audio_duration
+from track.utils.audio import audio_chunks_to_wav
 
 logger = logging.getLogger(__name__)
 

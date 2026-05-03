@@ -1,15 +1,17 @@
-"""Base abstractions for local transcription backends."""
+"""Transcription backend contracts."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import BaseModel, ConfigDict
 
-@dataclass(frozen=True, slots=True)
-class TranscriptionResult:
+
+class TranscriptionResult(BaseModel):
     """Describe one transcription result returned by a local backend."""
+
+    model_config = ConfigDict(frozen=True)
 
     text: str
     language: str | None = None

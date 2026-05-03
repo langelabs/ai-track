@@ -9,10 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from track.inference.ai_model import AiModel
-from track.inference.chat.base import BaseChatLLM, ChatGenerationConfig
-from track.inference.model_storage import resolve_model_location
-from track.inference.types import Message, TextContentPart
+from track.contracts import AiModel, BaseChatLLM, ChatGenerationConfig, Message, TextContentPart
+from track.utils import resolve_model_location
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +28,8 @@ def _load_vllm_runtime() -> VLLMRuntime:
     try:
         from vllm import LLM, SamplingParams
     except ModuleNotFoundError as exc:
-        def _missing(*_: object, **__: object) -> Any:
-            raise RuntimeError("vllm is not installed.") from exc
+        def _missing(*_: object, _exc: ModuleNotFoundError = exc, **__: object) -> Any:
+            raise RuntimeError("vllm is not installed.") from _exc
 
         return VLLMRuntime(llm=_missing, sampling_params=_missing)
 

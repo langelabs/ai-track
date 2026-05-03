@@ -6,10 +6,10 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from track.inference.embedding.base import BaseEmbeddingModel
-from track.inference.model_storage import resolve_model_location
+from track.contracts import BaseEmbeddingModel
+from track.utils.model_storage import resolve_model_location
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +29,8 @@ def _load_transformers_runtime() -> TransformersEmbeddingRuntime:
         import torch
         from transformers import AutoModel, AutoTokenizer
     except ModuleNotFoundError as exc:
-        def _missing(*_: object, **__: object) -> Any:
-            raise RuntimeError("transformers is not installed.") from exc
+        def _missing(*_: object, _exc: ModuleNotFoundError = exc, **__: object) -> Any:
+            raise RuntimeError("transformers is not installed.") from _exc
 
         return TransformersEmbeddingRuntime(auto_model=_missing, auto_tokenizer=_missing, torch=_missing)
     return TransformersEmbeddingRuntime(auto_model=AutoModel, auto_tokenizer=AutoTokenizer, torch=torch)

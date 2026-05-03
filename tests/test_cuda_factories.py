@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 
 def test_chat_factory_uses_cuda_backend() -> None:
-    from track.inference.ai_model import AiModel
+    from track.contracts import AiModel
     from track.inference.chat.models import create_chat_model
 
     config = AiModel(
@@ -38,7 +38,7 @@ def test_audio_factory_uses_cuda_backend() -> None:
 
 
 def test_embedding_factory_uses_cuda_backend() -> None:
-    from track.inference.ai_model import AiModel
+    from track.contracts import AiModel
     from track.inference.embedding.models import create_embedding_model
 
     config = AiModel(

@@ -9,17 +9,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from track.inference.ai_model import AiModel
-from track.inference.chat.base import BaseChatLLM, ChatGenerationConfig
-from track.inference.chat.utils import (
+from track.contracts import AiModel, BaseChatLLM, ChatGenerationConfig, Message
+from track.utils import (
     ensure_user_first_after_system,
     extract_conversation_audio_path,
     extract_conversation_image_path,
     render_prompt_messages,
     validate_mlx_messages,
 )
-from track.inference.model_storage import resolve_model_location
-from track.inference.types import Message
+from track.utils import resolve_model_location
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +39,8 @@ def _load_mlx_runtime() -> MLXRuntime:
         from mlx_vlm import generate, load
         from mlx_vlm.prompt_utils import apply_chat_template
     except ModuleNotFoundError as exc:
-        def _missing(*_: object, **__: object) -> Any:
-            raise RuntimeError("mlx_vlm is not installed.") from exc
+        def _missing(*_: object, _exc: ModuleNotFoundError = exc, **__: object) -> Any:
+            raise RuntimeError("mlx_vlm is not installed.") from _exc
 
         return MLXRuntime(
             load=_missing,

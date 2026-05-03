@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from track.inference.audio.base import BaseAudioModel
+from track.contracts import BaseAudioModel
 
 
 @dataclass(frozen=True, slots=True)

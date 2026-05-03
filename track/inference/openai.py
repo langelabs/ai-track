@@ -10,54 +10,18 @@ import tempfile
 from dataclasses import dataclass, field
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 import time
 
-from track.inference.audio.base import AudioGenerationResult
-from track.inference.image.base import ImageGenerationEvent
-from track.inference.transcription.base import TranscriptionResult
-from track.inference.types import (
+from track.contracts import (
     AudioPathContentPart,
     ImagePathContentPart,
     Message,
+    SupportsOpenAICompatibility,
     TextContentPart,
+    TranscriptionResult,
 )
-
-
-class SupportsOpenAICompatibility(Protocol):
-    """Describe the LocalAI methods required by the compatibility layer."""
-
-    def chat(self, messages: list[Message]) -> Message: ...
-
-    def embed(self, content: str | list[str]) -> Any: ...
-
-    def generate_image(
-        self,
-        prompt: str,
-        size: int = 512,
-        steps: int = 4,
-        callback: Any | None = None,
-    ) -> object: ...
-
-    def stream_chat(self, messages: list[Message]) -> Iterator[str]: ...
-
-    def stream_image(self, prompt: str, size: int = 512, steps: int = 4) -> Iterator[ImageGenerationEvent]: ...
-
-    def generate_speech(
-        self,
-        text: str,
-        voice: str | None = None,
-        response_format: str | None = None,
-        model: str | None = None,
-    ) -> AudioGenerationResult: ...
-
-    def transcribe(
-        self,
-        audio: str | Path | bytes,
-        language: str | None = None,
-        model: str | None = None,
-    ) -> TranscriptionResult: ...
 
 
 def _estimate_text_tokens(text: str) -> int:

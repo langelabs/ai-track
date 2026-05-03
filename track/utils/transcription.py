@@ -1,4 +1,4 @@
-"""Helpers for transcription backends."""
+"""Audio input helpers for transcription backends."""
 
 from __future__ import annotations
 

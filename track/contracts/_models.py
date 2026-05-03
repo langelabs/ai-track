@@ -1,15 +1,17 @@
-"""Shared AI model metadata and inference settings."""
+"""AI model metadata contracts."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from pydantic import BaseModel, ConfigDict
 
-@dataclass(frozen=True, slots=True)
-class InferenceConfig:
+
+class InferenceConfig(BaseModel):
     """Describe optional inference-time overrides for one AI model."""
+
+    model_config = ConfigDict(frozen=True)
 
     max_tokens: int | None = None
     temperature: float | None = None
@@ -18,16 +20,18 @@ class InferenceConfig:
     verbose: bool | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class AiModelState:
+class AiModelState(BaseModel):
     """Describe the state of one AI model."""
+
+    model_config = ConfigDict(frozen=True)
 
     download_percentage: float | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class AiModelCapabilities:
+class AiModelCapabilities(BaseModel):
     """Describe supported input and output modalities for one AI model."""
+
+    model_config = ConfigDict(frozen=True)
 
     text_input: bool = False
     text_output: bool = False
@@ -37,9 +41,10 @@ class AiModelCapabilities:
     image_output: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class AiModel:
+class AiModel(BaseModel):
     """Describe one selectable AI model exposed by the application."""
+
+    model_config = ConfigDict(frozen=True)
 
     default: bool
     location: Literal["local", "open-router"]

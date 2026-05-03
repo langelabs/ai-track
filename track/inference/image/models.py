@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from track.inference.ai_model import AiModel
-
-if TYPE_CHECKING:
-    from track.inference.image.base import BaseImageGenerationModel
+from track.contracts import AiModel, BaseImageGenerationModel
 
 
 def create_image_generation_model(

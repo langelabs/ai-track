@@ -4,44 +4,44 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from threading import Lock
 from typing import Any, Literal
 import sys
 
-from track.inference.ai_model import AiModel
-from track.inference.audio import AudioGenerationResult, AudioModelConfig, BaseAudioModel, create_audio_model
-from track.inference.chat import BaseChatLLM, create_chat_model
-from track.inference.embedding import BaseEmbeddingModel, create_embedding_model
-from track.inference.image.base import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
-from track.inference.image.models import create_image_generation_model
-from track.inference.model_storage import is_model_artifact_cached, resolve_model_location
-from track.inference.openai import AsyncClient, Client
-from track.inference.transcription import (
+from track.contracts import (
+    AiModel,
+    AudioGenerationResult,
+    BaseAudioModel,
+    BaseChatLLM,
+    BaseEmbeddingModel,
+    BaseImageGenerationModel,
     BaseTranscriptionModel,
-    TranscriptionModelConfig,
+    ImageGenerationCallback,
+    ImageGenerationEvent,
+    Message,
     TranscriptionResult,
-    create_transcription_model,
 )
-from track.inference.types import Message
+from track.inference.audio.models import AudioModelConfig
+from track.inference.audio import create_audio_model
+from track.inference.chat import create_chat_model
+from track.inference.embedding import create_embedding_model
+from track.inference.image.models import create_image_generation_model
+from track.inference.openai import AsyncClient, Client
+from track.inference.transcription import create_transcription_model
+from track.inference.transcription.models import TranscriptionModelConfig
+from track.utils import (
+    configured_local_model_ids,
+    download_local_model_artifact,
+    get_compute_device,
+    is_model_artifact_cached,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def get_compute_device() -> Literal["cuda", "cpu", "mps"]:
-    """Return the preferred execution device."""
-    if sys.platform == "darwin":
-        return "mps"
-    try:
-        import torch  # type: ignore[import-not-found]
-    except ModuleNotFoundError:
-        return "cpu"
-    if torch.cuda.is_available():
-        return "cuda"
-    if hasattr(torch, "mps") and torch.mps.is_available():
-        return "mps"
-    return "cpu"
+
 
 
 def detect_backend() -> Literal["cuda", "mlx"] | None:
@@ -57,59 +57,7 @@ def detect_backend() -> Literal["cuda", "mlx"] | None:
     return None
 
 
-def download_local_model_artifact(
-    model_id: str,
-    *,
-    hf_token: str | None,
-    model_path: str | Path | None,
-    on_progress: Callable[[float | None], None] | None = None,
-) -> None:
-    """Download or resolve one local model snapshot under the shared model directory."""
-    if model_path is None:
-        return
-    resolve_model_location(model_id, Path(model_path), hf_token, on_progress=on_progress)
-
-
-def download_configured_models(
-    *,
-    chat_config: AiModel | None,
-    embedding_config: AiModel | None,
-    image_generation_config: AiModel | None,
-    audio_config: AudioModelConfig | None,
-    transcription_config: TranscriptionModelConfig | None = None,
-    hf_token: str | None,
-    model_path: str | Path | None,
-) -> None:
-    """Download every configured local model artifact into the shared model directory."""
-    for model_id in {
-        *(config.model for config in (chat_config, embedding_config, image_generation_config) if config is not None),
-        *((audio_config.model_id,) if audio_config is not None else ()),
-        *((transcription_config.model_id,) if transcription_config is not None else ()),
-    }:
-        download_local_model_artifact(model_id, hf_token=hf_token, model_path=model_path)
-
-
-def _configured_local_model_ids(
-    *,
-    chat_config: AiModel | None,
-    embedding_config: AiModel | None,
-    image_generation_config: AiModel | None,
-    audio_config: AudioModelConfig | None,
-    transcription_config: TranscriptionModelConfig | None,
-) -> frozenset[str]:
-    """Return unique configured model ids for chat, embedding, image, and audio."""
-    ids: set[str] = set()
-    for config in (chat_config, embedding_config, image_generation_config):
-        if config is not None:
-            ids.add(config.model)
-    if audio_config is not None:
-        ids.add(audio_config.model_id)
-    if transcription_config is not None:
-        ids.add(transcription_config.model_id)
-    return frozenset(ids)
-
-
-class LocalAI:
+class AiInference:
     """Compose embedding, chat, image-generation, and audio providers."""
 
     def __init__(
@@ -182,7 +130,7 @@ class LocalAI:
 
     def prefetch_configured_artifacts(self) -> None:
         """Download every configured model snapshot (no MLX weight load)."""
-        for model_id in _configured_local_model_ids(
+        for model_id in configured_local_model_ids(
             chat_config=self.chat_config,
             embedding_config=self.embedding_config,
             image_generation_config=self.image_generation_config,
@@ -447,7 +395,7 @@ class LocalAI:
 
 
 def resolve_client(
-    local_ai: LocalAI,
+    local_ai: AiInference,
     model: AiModel,
     *,
     remote_api_key: str | None = None,
@@ -464,6 +412,10 @@ def resolve_client(
     )
 
 
-def get_client(local_ai: LocalAI, model: AiModel) -> Any:
+def get_client(local_ai: AiInference, model: AiModel) -> Any:
     """Return the resolved client for one model."""
     return resolve_client(local_ai, model)
+
+
+LocalAI = AiInference
+"""Compatibility alias for the universal local inference runtime."""

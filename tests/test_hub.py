@@ -2,21 +2,20 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 
 def test_hub_module_exports_public_router() -> None:
     from track import hub
 
-    assert hub.Hub is not None
-    assert hub.ModelRouter is hub.Hub
+    assert hub.AiHub is not None
+    assert hub.ModelRouter is hub.AiHub
+    assert hub.Hub is hub.AiHub
     assert hub.resolve_client is not None
     assert hub.get_client is not None
 
 
 def test_hub_prefers_local_client_for_local_models() -> None:
-    from track.hub import Hub
-    from track.inference.ai_model import AiModel
+    from track.hub import AiHub
+    from track.contracts import AiModel
 
     local_client = object()
 
@@ -33,7 +32,7 @@ def test_hub_prefers_local_client_for_local_models() -> None:
         def is_model_artifact_cached(self, model_id: str) -> bool:
             return False
 
-    router = Hub(
+    router = AiHub(
         local_ai=FakeLocalAI(),
         remote_client_factory=lambda **kwargs: SimpleNamespace(**kwargs),
     )
@@ -50,8 +49,8 @@ def test_hub_prefers_local_client_for_local_models() -> None:
 
 
 def test_hub_falls_back_to_remote_client_for_remote_models() -> None:
-    from track.hub import Hub
-    from track.inference.ai_model import AiModel
+    from track.hub import AiHub
+    from track.contracts import AiModel
 
     captured: dict[str, str | None] = {}
 
@@ -73,7 +72,7 @@ def test_hub_falls_back_to_remote_client_for_remote_models() -> None:
         captured["base_url"] = base_url
         return object()
 
-    router = Hub(
+    router = AiHub(
         local_ai=FakeLocalAI(),
         remote_api_key="remote-key",
         remote_base_url="https://example.invalid/v1",
@@ -95,8 +94,8 @@ def test_hub_falls_back_to_remote_client_for_remote_models() -> None:
 
 
 def test_hub_refreshes_model_statuses() -> None:
-    from track.hub import Hub
-    from track.inference.ai_model import AiModel
+    from track.hub import AiHub
+    from track.contracts import AiModel
     from track.inference.audio.models import AudioModelConfig
 
     chat_config = AiModel(
@@ -140,7 +139,7 @@ def test_hub_refreshes_model_statuses() -> None:
         def is_model_artifact_cached(self, model_id: str) -> bool:
             return False
 
-    hub = Hub(local_ai=FakeLocalAI(), external_models=[external_model])
+    hub = AiHub(local_ai=FakeLocalAI(), external_models=[external_model])
     model_statuses = {model.model: model.status for model in hub.get_models()}
 
     assert model_statuses[chat_config.model] == "downloading"

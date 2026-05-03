@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from track.inference.embedding.base import BaseEmbeddingModel
-from track.inference.model_storage import resolve_model_location
+from track.contracts import BaseEmbeddingModel
+from track.utils import resolve_model_location
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,8 +25,8 @@ def _load_mlx_embedding_runtime() -> MLXEmbeddingRuntime:
         from mlx_lm import load
         import mlx.core as mx
     except ModuleNotFoundError as exc:
-        def _missing(*_: object, **__: object) -> Any:
-            raise RuntimeError("mlx_lm is not installed.") from exc
+        def _missing(*_: object, _exc: ModuleNotFoundError = exc, **__: object) -> Any:
+            raise RuntimeError("mlx_lm is not installed.") from _exc
 
         return MLXEmbeddingRuntime(load=_missing, array=None, to_float32=None)
 

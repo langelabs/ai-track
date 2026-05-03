@@ -1,8 +1,8 @@
-"""Utility functions for local chat backends."""
+"""Chat message helper utilities used by MLX backends."""
 
 from __future__ import annotations
 
-from track.inference.types import AudioPathContentPart, ImagePathContentPart, Message, TextContentPart
+from track.contracts import AudioPathContentPart, ImagePathContentPart, Message, TextContentPart
 
 
 def extract_message_image_paths(message: Message) -> list[str]:

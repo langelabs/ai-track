@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from track.inference.transcription.base import BaseTranscriptionModel
+from track.contracts import BaseTranscriptionModel
 
 
 @dataclass(frozen=True, slots=True)

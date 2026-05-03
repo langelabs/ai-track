@@ -8,8 +8,8 @@ from pathlib import Path
 import threading
 from typing import Any
 
-from track.inference.image.base import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
-from track.inference.model_storage import resolve_model_location
+from track.contracts import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
+from track.utils import resolve_model_location
 
 
 @dataclass(frozen=True, slots=True)

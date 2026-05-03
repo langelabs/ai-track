@@ -1,4 +1,4 @@
-"""Shared helpers for resolving local model storage paths."""
+"""Helpers for resolving local model storage paths."""
 
 from __future__ import annotations
 

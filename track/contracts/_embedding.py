@@ -1,4 +1,4 @@
-"""Base abstractions for local embedding backends."""
+"""Embedding backend contracts."""
 
 from __future__ import annotations
 

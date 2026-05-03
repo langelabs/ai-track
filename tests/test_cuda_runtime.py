@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 
 def test_local_ai_defaults_to_configured_backend_when_detected() -> None:
-    from track.inference.ai_model import AiModel
-    from track.inference.head import LocalAI
+    from track.contracts import AiModel
+    from track.inference.head import AiInference
 
     chat_config = AiModel(
         default=True,
@@ -19,15 +19,15 @@ def test_local_ai_defaults_to_configured_backend_when_detected() -> None:
     )
 
     with patch("track.inference.head.detect_backend", return_value="cuda"):
-        runtime = LocalAI(chat_config=chat_config, autoload=False)
+        runtime = AiInference(chat_config=chat_config, autoload=False)
 
     assert runtime.backend == "cuda"
 
 
 def test_local_ai_explicit_cuda_backend_loads_cuda_factories() -> None:
-    from track.inference.ai_model import AiModel
-    from track.inference.head import LocalAI
-    from track.inference.transcription.base import TranscriptionResult
+    from track.contracts import AiModel
+    from track.inference.head import AiInference
+    from track.contracts import TranscriptionResult
 
     chat_config = AiModel(
         default=True,
@@ -39,7 +39,7 @@ def test_local_ai_explicit_cuda_backend_loads_cuda_factories() -> None:
     )
     transcription_config = SimpleNamespace(model_id="cuda/test-asr", alias="asr", default=True)
 
-    runtime = LocalAI(
+    runtime = AiInference(
         backend="cuda",
         chat_config=chat_config,
         transcription_config=transcription_config,
@@ -64,10 +64,10 @@ def test_local_ai_explicit_cuda_backend_loads_cuda_factories() -> None:
 
 
 def test_local_ai_transcribe_uses_transcription_model() -> None:
-    from track.inference.head import LocalAI
-    from track.inference.transcription.base import TranscriptionResult
+    from track.inference.head import AiInference
+    from track.contracts import TranscriptionResult
 
-    runtime = LocalAI(backend="cuda", autoload=False)
+    runtime = AiInference(backend="cuda", autoload=False)
     runtime.transcription_model = SimpleNamespace(
         transcribe=lambda audio, language=None, model=None: TranscriptionResult(
             text=f"transcribed:{Path(audio).name}",
@@ -82,7 +82,7 @@ def test_local_ai_transcribe_uses_transcription_model() -> None:
 
 def test_openai_client_exposes_audio_transcriptions_resource() -> None:
     from track.inference.openai import Client
-    from track.inference.transcription.base import TranscriptionResult
+    from track.contracts import TranscriptionResult
 
     client = Client(
         local_ai=SimpleNamespace(

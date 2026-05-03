@@ -23,6 +23,9 @@ The codebase is split into two major layers:
 - `track.inference` contains the runtime primitives and backend implementations.
 - `track.hub` contains the public routing layer that decides whether a model
   should use local inference or a remote client.
+- `track.contracts` contains shared dataclasses, protocols, and base interfaces.
+- `track.utils` contains shared helper functions for devices, storage, audio,
+  chat message handling, and transcription input prep.
 
 The runtime is centered around `LocalAI`, which can manage:
 
@@ -58,7 +61,8 @@ reliable remote fallback.
 The main entrypoints are:
 
 ```python
-from track.hub import Hub
+from track import hub, inference
+from track.hub import AiHub
 from track.inference import LocalAI
 ```
 
@@ -82,33 +86,33 @@ It supports:
 ### Example: chat
 
 ```python
-from track.hub import Hub
+from track.hub import AiHub
 from track.inference import AiModel, InferenceConfig, LocalAI
 
 chat_model = AiModel(
-    default=True,
-    location="local",
-    type="llm",
-    status="available",
-    model="mlx-community/qwen2",
-    alias="Qwen2",
-    inference_config=InferenceConfig(max_tokens=256, temperature=0.2),
+  default=True,
+  location="local",
+  type="llm",
+  status="available",
+  model="mlx-community/qwen2",
+  alias="Qwen2",
+  inference_config=InferenceConfig(max_tokens=256, temperature=0.2),
 )
 
 runtime = LocalAI(
-    chat_config=chat_model,
-    remote_api_key="sk-example",
-    remote_base_url="https://openrouter.ai/api/v1",
+  chat_config=chat_model,
+  remote_api_key="sk-example",
+  remote_base_url="https://openrouter.ai/api/v1",
 )
 
-hub = Hub(local_ai=runtime)
+hub = AiHub(local_ai=runtime)
 client = hub.get_client(chat_model)
 
 response = client.chat.completions.create(
-    model=chat_model.model,
-    messages=[
-        {"role": "user", "content": "Summarize this architecture."},
-    ],
+  model=chat_model.model,
+  messages=[
+    {"role": "user", "content": "Summarize this architecture."},
+  ],
 )
 
 print(response.choices[0].message["content"])

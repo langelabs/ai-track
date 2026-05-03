@@ -1,4 +1,4 @@
-"""Shared helpers for audio generation backends."""
+"""Audio helper utilities used across inference backends."""
 
 from __future__ import annotations
 

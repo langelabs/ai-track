@@ -1,20 +1,21 @@
-"""Base abstractions for local image backends."""
+"""Image generation backend contracts."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
-from typing import Literal, Protocol, runtime_checkable
+
+from pydantic import BaseModel, ConfigDict
 
 
-@dataclass(frozen=True, slots=True)
-class ImageGenerationEvent:
+class ImageGenerationEvent(BaseModel):
     """Describe a single image-generation stream update."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     image: object
     step: int | None = None
-    kind: Literal["intermediate", "final"] = "intermediate"
+    kind: str = "intermediate"
 
 
 ImageGenerationCallback = Callable[[int, int, object], None]
