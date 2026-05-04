@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from . import hub, inference
-from .contracts import AiModel, AiModelCapabilities, AiModelState
+from . import hub, inference, providers
+from .contracts import AiModel, AiModelCapabilities, AiModelState, AiProvider
 from .hub import AiHub
 
 __all__ = [
@@ -11,6 +11,8 @@ __all__ = [
     "AiModel",
     "AiModelCapabilities",
     "AiModelState",
+    "AiProvider",
     "hub",
     "inference",
+    "providers",
 ]

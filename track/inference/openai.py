@@ -1176,3 +1176,24 @@ def create_remote_client(
     if remote_cls is None:
         return Client(local_ai=None, api_key=api_key, base_url=base_url)
     return remote_cls(api_key=api_key, base_url=base_url)
+
+
+def create_remote_async_client(
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> Any:
+    """Return a remote async OpenAI-compatible client when the SDK is installed.
+
+    If the OpenAI SDK is unavailable in the current environment, fall back to the
+    local stub async client shape so callers still receive a consistent object.
+    """
+    try:
+        openai_module = __import__("openai")
+    except ModuleNotFoundError:
+        return AsyncClient(local_ai=None, api_key=api_key, base_url=base_url)
+
+    remote_cls = getattr(openai_module, "AsyncOpenAI", None) or getattr(openai_module, "AsyncClient", None)
+    if remote_cls is None:
+        return AsyncClient(local_ai=None, api_key=api_key, base_url=base_url)
+    return remote_cls(api_key=api_key, base_url=base_url)

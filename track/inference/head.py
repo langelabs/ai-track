@@ -12,16 +12,19 @@ import sys
 
 from track.contracts import (
     AiModel,
+    AiModelState,
     AudioGenerationResult,
     BaseAudioModel,
     BaseChatLLM,
     BaseEmbeddingModel,
     BaseImageGenerationModel,
     BaseTranscriptionModel,
+    AiProvider,
     ImageGenerationCallback,
     ImageGenerationEvent,
     Message,
     TranscriptionResult,
+    build_model_alias,
 )
 from track.inference.audio.models import AudioModelConfig
 from track.inference.audio import create_audio_model
@@ -57,7 +60,7 @@ def detect_backend() -> Literal["cuda", "mlx"] | None:
     return None
 
 
-class AiInference:
+class AiInference(AiProvider):
     """Compose embedding, chat, image-generation, and audio providers."""
 
     def __init__(
@@ -71,8 +74,6 @@ class AiInference:
         audio_config: AudioModelConfig | None = None,
         transcription_config: TranscriptionModelConfig | None = None,
         autoload: bool = True,
-        remote_api_key: str | None = None,
-        remote_base_url: str | None = None,
     ) -> None:
         """Build the configured local AI providers."""
         self.device = get_compute_device()
@@ -84,8 +85,6 @@ class AiInference:
         self.image_generation_config = image_generation_config
         self.audio_config = audio_config
         self.transcription_config = transcription_config
-        self.remote_api_key = remote_api_key
-        self.remote_base_url = remote_base_url
         self.embedding_model: BaseEmbeddingModel | None = None
         self.image_model: BaseImageGenerationModel | None = None
         self.audio_model: BaseAudioModel | None = None
@@ -138,6 +137,108 @@ class AiInference:
             transcription_config=self.transcription_config,
         ):
             self.ensure_model_artifact_downloaded(model_id)
+
+    def _resolve_local_model_status(
+        self,
+        model: AiModel,
+        *,
+        runtime_model: object | None,
+    ) -> AiModel:
+        """Return one local model with runtime-derived availability status."""
+        pct = self.get_model_download_percentage(model.model)
+        if pct is not None:
+            return AiModel(
+                default=model.default,
+                location=model.location,
+                type=model.type,
+                status="downloading",
+                model=model.model,
+                alias=model.alias,
+                inference_config=model.inference_config,
+                capabilities=model.capabilities,
+                state=AiModelState(download_percentage=pct),
+            )
+        if runtime_model is not None:
+            return AiModel(
+                default=model.default,
+                location=model.location,
+                type=model.type,
+                status="available",
+                model=model.model,
+                alias=model.alias,
+                inference_config=model.inference_config,
+                capabilities=model.capabilities,
+                state=None,
+            )
+        if self.is_model_artifact_cached(model.model):
+            return AiModel(
+                default=model.default,
+                location=model.location,
+                type=model.type,
+                status="downloaded",
+                model=model.model,
+                alias=model.alias,
+                inference_config=model.inference_config,
+                capabilities=model.capabilities,
+                state=None,
+            )
+        return AiModel(
+            default=model.default,
+            location=model.location,
+            type=model.type,
+            status=model.status,
+            model=model.model,
+            alias=model.alias,
+            inference_config=model.inference_config,
+            capabilities=model.capabilities,
+            state=None,
+        )
+
+    def _build_models(self) -> list[AiModel]:
+        """Construct the current local model registry."""
+        models: list[AiModel] = []
+        configured_local_models = [
+            model
+            for model in (
+                self.chat_config,
+                self.embedding_config,
+                self.image_generation_config,
+            )
+            if model is not None
+        ]
+        runtime_models_by_type = {
+            "llm": self.chat_llm,
+            "embedding": self.embedding_model,
+            "image": self.image_model,
+            "audio": self.audio_model,
+        }
+        for configured_local_model in configured_local_models:
+            models.append(
+                self._resolve_local_model_status(
+                    configured_local_model,
+                    runtime_model=runtime_models_by_type.get(configured_local_model.type),
+                )
+            )
+        audio_config = self.audio_config
+        if audio_config is not None:
+            models.append(
+                self._resolve_local_model_status(
+                    AiModel(
+                        default=audio_config.default,
+                        location="local",
+                        type="audio",
+                        status="downloaded",
+                        model=audio_config.model_id,
+                        alias=audio_config.alias or build_model_alias(audio_config.model_id),
+                    ),
+                    runtime_model=runtime_models_by_type["audio"],
+                )
+            )
+        return models
+
+    def get_models(self) -> list[AiModel]:
+        """Return the currently configured local models."""
+        return self._build_models()
 
     def _ensure_embedding_loaded(self) -> None:
         """Resolve artifacts and construct the embedding backend when configured."""
@@ -333,12 +434,16 @@ class AiInference:
         embedding_model = self._require_embedding_model()
         return embedding_model.embed(content)
 
-    def get_client(self) -> Client:
+    def get_client(self, model_name: str | None = None) -> Client:
         """Return a sync OpenAI-compatible client bound to this instance."""
+        if model_name is not None:
+            self.get_model(model_name)
         return Client(local_ai=self)
 
-    def get_async_client(self) -> AsyncClient:
+    def get_async_client(self, model_name: str | None = None) -> AsyncClient:
         """Return an async OpenAI-compatible client bound to this instance."""
+        if model_name is not None:
+            self.get_model(model_name)
         return AsyncClient(local_ai=self)
 
     def chat(self, messages: list[Message]) -> Message:
@@ -402,14 +507,8 @@ def resolve_client(
     remote_base_url: str | None = None,
 ) -> Any:
     """Return the resolved client for one model."""
-    from track.hub import resolve_client as resolve_hub_client
-
-    return resolve_hub_client(
-        local_ai,
-        model,
-        remote_api_key=remote_api_key,
-        remote_base_url=remote_base_url,
-    )
+    del remote_api_key, remote_base_url
+    return local_ai.get_client(model.model)
 
 
 def get_client(local_ai: AiInference, model: AiModel) -> Any:

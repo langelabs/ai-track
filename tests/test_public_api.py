@@ -6,7 +6,9 @@ def test_track_exports_hub_and_inference() -> None:
 
     assert hasattr(track, "hub")
     assert hasattr(track, "inference")
+    assert hasattr(track, "providers")
     assert hasattr(track, "AiHub")
+    assert hasattr(track, "AiProvider")
 
 
 def test_inference_package_excludes_routing_layer() -> None:
@@ -23,15 +25,20 @@ def test_hub_package_exposes_router() -> None:
     from track import hub
 
     assert hasattr(hub, "Hub")
-    assert hasattr(hub, "resolve_client")
-    assert hasattr(hub, "get_client")
+    assert hasattr(hub, "AiHub")
+    assert hasattr(hub, "ModelRouter")
+    assert not hasattr(hub, "resolve_client")
+    assert not hasattr(hub, "get_client")
 
 
 def test_contracts_and_utils_are_importable() -> None:
     import track.contracts
     import track.utils
+    import track.providers
 
     assert hasattr(track.contracts, "Message")
     assert hasattr(track.contracts, "BaseChatLLM")
+    assert hasattr(track.contracts, "AiProvider")
     assert hasattr(track.utils, "get_compute_device")
     assert hasattr(track.utils, "resolve_model_location")
+    assert hasattr(track.providers, "OpenRouterProvider")

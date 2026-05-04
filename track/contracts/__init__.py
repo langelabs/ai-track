@@ -8,6 +8,7 @@ from ._content import AudioPathContentPart, ContentPart, ImagePathContentPart, M
 from ._embedding import BaseEmbeddingModel
 from ._image import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
 from ._models import AiModel, AiModelCapabilities, AiModelState, InferenceConfig, build_model_alias
+from ._provider import AiProvider
 from ._protocols import RemoteClientFactory, SupportsOpenAICompatibility
 from ._transcription import BaseTranscriptionModel, TranscriptionResult
 
@@ -15,6 +16,7 @@ __all__ = [
     "AiModel",
     "AiModelCapabilities",
     "AiModelState",
+    "AiProvider",
     "AudioGenerationResult",
     "AudioPathContentPart",
     "BaseAudioModel",

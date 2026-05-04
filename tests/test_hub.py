@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+import pytest
 
 
 def test_hub_module_exports_public_router() -> None:
@@ -9,143 +9,120 @@ def test_hub_module_exports_public_router() -> None:
     assert hub.AiHub is not None
     assert hub.ModelRouter is hub.AiHub
     assert hub.Hub is hub.AiHub
-    assert hub.resolve_client is not None
-    assert hub.get_client is not None
+    assert not hasattr(hub, "resolve_client")
+    assert not hasattr(hub, "get_client")
 
 
-def test_hub_prefers_local_client_for_local_models() -> None:
+def test_hub_resolves_clients_by_canonical_model_name() -> None:
+    from track.contracts import AiModel, AiProvider
     from track.hub import AiHub
-    from track.contracts import AiModel
 
-    local_client = object()
+    sync_client = object()
+    async_client = object()
 
-    class FakeLocalAI:
-        def get_client(self) -> object:
-            return local_client
-
-        def supports_local_model(self, model: AiModel) -> bool:
-            return model.location == "local"
-
-        def get_model_download_percentage(self, model_id: str) -> float | None:
-            return None
-
-        def is_model_artifact_cached(self, model_id: str) -> bool:
-            return False
-
-    router = AiHub(
-        local_ai=FakeLocalAI(),
-        remote_client_factory=lambda **kwargs: SimpleNamespace(**kwargs),
-    )
-    model = AiModel(
-        default=True,
-        location="local",
-        type="llm",
-        status="available",
-        model="mlx-community/test",
-        alias="test",
-    )
-
-    assert router.get_client(model) is local_client
-
-
-def test_hub_falls_back_to_remote_client_for_remote_models() -> None:
-    from track.hub import AiHub
-    from track.contracts import AiModel
-
-    captured: dict[str, str | None] = {}
-
-    class FakeLocalAI:
-        def get_client(self) -> object:
-            raise AssertionError("local client should not be used")
-
-        def supports_local_model(self, model: AiModel) -> bool:
-            return False
-
-        def get_model_download_percentage(self, model_id: str) -> float | None:
-            return None
-
-        def is_model_artifact_cached(self, model_id: str) -> bool:
-            return False
-
-    def remote_client_factory(*, api_key: str | None, base_url: str | None) -> object:
-        captured["api_key"] = api_key
-        captured["base_url"] = base_url
-        return object()
-
-    router = AiHub(
-        local_ai=FakeLocalAI(),
-        remote_api_key="remote-key",
-        remote_base_url="https://example.invalid/v1",
-        remote_client_factory=remote_client_factory,
-    )
-    model = AiModel(
-        default=False,
-        location="open-router",
-        type="llm",
-        status="available",
-        model="openrouter/test",
-        alias="remote",
-    )
-
-    client = router.get_client(model)
-    assert client is not None
-    assert captured["api_key"] == "remote-key"
-    assert captured["base_url"] == "https://example.invalid/v1"
-
-
-def test_hub_refreshes_model_statuses() -> None:
-    from track.hub import AiHub
-    from track.contracts import AiModel
-    from track.inference.audio.models import AudioModelConfig
-
-    chat_config = AiModel(
-        default=True,
-        location="local",
-        type="llm",
-        status="not_downloaded",
-        model="mlx-community/chat",
-        alias="chat",
-    )
-    audio_config = AudioModelConfig(model_id="mlx-community/audio", alias="audio")
-    external_model = AiModel(
-        default=False,
-        location="open-router",
-        type="llm",
-        status="failed",
-        model="openrouter/test",
-        alias="remote",
-    )
-
-    class FakeLocalAI:
+    class FakeProvider(AiProvider):
         def __init__(self) -> None:
-            self.chat_config = chat_config
-            self.embedding_config = None
-            self.image_generation_config = None
-            self.audio_config = audio_config
-            self.chat_llm = object()
-            self.embedding_model = None
-            self.image_model = None
-            self.audio_model = object()
+            self.client_calls: list[str | None] = []
+            self.async_calls: list[str | None] = []
+            self._models = [
+                AiModel(
+                    default=True,
+                    location="local",
+                    type="llm",
+                    status="available",
+                    model="mlx-community/test",
+                    alias="test",
+                )
+            ]
 
-        def get_client(self) -> object:
+        def get_models(self) -> list[AiModel]:
+            return list(self._models)
+
+        def get_client(self, model_name: str | None = None) -> object:
+            self.client_calls.append(model_name)
+            return sync_client
+
+        def get_async_client(self, model_name: str | None = None) -> object:
+            self.async_calls.append(model_name)
+            return async_client
+
+    provider = FakeProvider()
+    hub = AiHub(providers=[provider])
+
+    assert hub.get_client("mlx-community/test") is sync_client
+    assert hub.get_async_client("mlx-community/test") is async_client
+    assert provider.client_calls == ["mlx-community/test"]
+    assert provider.async_calls == ["mlx-community/test"]
+
+
+def test_hub_rejects_alias_lookup() -> None:
+    from track.contracts import AiModel, AiProvider
+    from track.hub import AiHub
+
+    class FakeProvider(AiProvider):
+        def __init__(self) -> None:
+            self._models = [
+                AiModel(
+                    default=True,
+                    location="local",
+                    type="llm",
+                    status="available",
+                    model="mlx-community/test",
+                    alias="friendly-name",
+                )
+            ]
+
+        def get_models(self) -> list[AiModel]:
+            return list(self._models)
+
+        def get_client(self, model_name: str | None = None) -> object:
             return object()
 
-        def supports_local_model(self, model: AiModel) -> bool:
-            return model.location == "local"
+        def get_async_client(self, model_name: str | None = None) -> object:
+            return object()
 
-        def get_model_download_percentage(self, model_id: str) -> float | None:
-            return 77.0 if model_id == chat_config.model else None
+    hub = AiHub(providers=[FakeProvider()])
 
-        def is_model_artifact_cached(self, model_id: str) -> bool:
-            return False
+    with pytest.raises(LookupError):
+        hub.get_client("friendly-name")
 
-    hub = AiHub(local_ai=FakeLocalAI(), external_models=[external_model])
-    model_statuses = {model.model: model.status for model in hub.get_models()}
 
-    assert model_statuses[chat_config.model] == "downloading"
-    assert model_statuses[audio_config.model_id] == "available"
-    assert model_statuses[external_model.model] == "failed"
+def test_hub_uses_supplied_model_registry() -> None:
+    from track.contracts import AiModel, AiProvider
+    from track.hub import AiHub
 
-    hub.set_openrouter_api_key("new-key")
-    refreshed_statuses = {model.model: model.status for model in hub.get_models()}
-    assert refreshed_statuses[external_model.model] == "available"
+    class FakeProvider(AiProvider):
+        def __init__(self) -> None:
+            self._models = [
+                AiModel(
+                    default=True,
+                    location="open-router",
+                    type="llm",
+                    status="available",
+                    model="openrouter/test",
+                    alias="remote",
+                )
+            ]
+
+        def get_models(self) -> list[AiModel]:
+            return list(self._models)
+
+        def get_client(self, model_name: str | None = None) -> object:
+            return object()
+
+        def get_async_client(self, model_name: str | None = None) -> object:
+            return object()
+
+    models = [
+        AiModel(
+            default=True,
+            location="open-router",
+            type="llm",
+            status="available",
+            model="openrouter/test",
+            alias="remote",
+        )
+    ]
+    hub = AiHub(providers=[FakeProvider()], models=models)
+
+    assert hub.models == models
