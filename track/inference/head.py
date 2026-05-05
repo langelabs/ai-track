@@ -19,7 +19,6 @@ from track.contracts import (
     BaseEmbeddingModel,
     BaseImageGenerationModel,
     BaseTranscriptionModel,
-    AiProvider,
     ImageGenerationCallback,
     ImageGenerationEvent,
     Message,
@@ -59,7 +58,7 @@ def detect_backend() -> Literal["cuda", "mlx"] | None:
     return None
 
 
-class AiInference(AiProvider):
+class AiInference:
     """Compose embedding, chat, image-generation, and audio providers."""
 
     def __init__(

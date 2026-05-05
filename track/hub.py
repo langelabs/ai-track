@@ -17,6 +17,10 @@ class AiHub:
         self._hugging_face_secret = hugging_face_secret
         self._openrouter_secret = openrouter_secret
 
+    @property
+    def models(self) -> list[AiModel]:
+        return list(self._models.keys())
+
     def add_model(self, model: AiModel):
         if model.provider == "local":
             self._models[model] = LocalProvider(model)
