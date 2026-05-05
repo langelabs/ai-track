@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,9 +14,10 @@ from track.utils import (
     extract_conversation_audio_path,
     extract_conversation_image_path,
     render_prompt_messages,
+    resolve_model_location,
     validate_mlx_messages,
 )
-from track.utils import resolve_model_location
+from track.utils.runtime import build_missing_optional_dependency_loader, configure_hugging_face_access
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +39,9 @@ def _load_mlx_runtime() -> MLXRuntime:
         from mlx_vlm import generate, load
         from mlx_vlm.prompt_utils import apply_chat_template
     except ModuleNotFoundError as exc:
-        def _missing(*_: object, _exc: ModuleNotFoundError = exc, **__: object) -> Any:
-            raise RuntimeError("mlx_vlm is not installed.") from _exc
-
         return MLXRuntime(
-            load=_missing,
-            generate=_missing,
+            load=build_missing_optional_dependency_loader("mlx_vlm", exc),
+            generate=build_missing_optional_dependency_loader("mlx_vlm", exc),
             apply_chat_template=lambda **kwargs: kwargs.get("prompt"),
             stream_generate=None,
         )
@@ -88,22 +85,11 @@ class MLXChatLLM(BaseChatLLM):
         self.processor: Any | None = None
         self.load_error: Exception | None = None
         try:
-            self._configure_hugging_face_access()
-            location = self._get_model_location()
+            configure_hugging_face_access(self.hf_token)
+            location = resolve_model_location(self.model_id, self.model_path, self.hf_token)
             self.model, self.processor = self.runtime.load(location)
         except Exception as exc:  # pragma: no cover - optional runtime path
             self.load_error = exc
-
-    def _configure_hugging_face_access(self) -> None:
-        """Expose the optional Hugging Face token to the runtime."""
-        if self.hf_token is None:
-            return
-        os.environ.setdefault("HF_TOKEN", self.hf_token)
-        os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", self.hf_token)
-
-    def _get_model_location(self) -> str | Path:
-        """Return the model identifier or its resolved local storage directory."""
-        return resolve_model_location(self.model_id, self.model_path, self.hf_token)
 
     def _ensure_ready(self) -> None:
         """Reject calls when the MLX runtime failed to load."""

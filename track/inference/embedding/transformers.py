@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from track.contracts import BaseEmbeddingModel
 from track.utils.model_storage import resolve_model_location
+from track.utils.runtime import build_missing_optional_dependency_loader, configure_hugging_face_access
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +29,8 @@ def _load_transformers_runtime() -> TransformersEmbeddingRuntime:
         import torch
         from transformers import AutoModel, AutoTokenizer
     except ModuleNotFoundError as exc:
-        def _missing(*_: object, _exc: ModuleNotFoundError = exc, **__: object) -> Any:
-            raise RuntimeError("transformers is not installed.") from _exc
-
-        return TransformersEmbeddingRuntime(auto_model=_missing, auto_tokenizer=_missing, torch=_missing)
+        missing = build_missing_optional_dependency_loader("transformers", exc)
+        return TransformersEmbeddingRuntime(auto_model=missing, auto_tokenizer=missing, torch=missing)
     return TransformersEmbeddingRuntime(auto_model=AutoModel, auto_tokenizer=AutoTokenizer, torch=torch)
 
 
@@ -67,18 +65,11 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         self.device = "cpu"
         self.runtime = _load_transformers_runtime()
         try:
-            self._configure_hugging_face_access()
+            configure_hugging_face_access(self.hf_token)
             self._configure_device()
             self.tokenizer, self.model = self._build_model()
         except Exception as exc:  # pragma: no cover - optional runtime path
             self.load_error = exc
-
-    def _configure_hugging_face_access(self) -> None:
-        """Expose the optional Hugging Face token to the runtime."""
-        if self.hf_token is None:
-            return
-        os.environ.setdefault("HF_TOKEN", self.hf_token)
-        os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", self.hf_token)
 
     def _configure_device(self) -> None:
         """Select the best execution device for the embedding model."""
@@ -87,10 +78,6 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
             return
         self.device = "cuda" if self.runtime.torch.cuda.is_available() else "cpu"
 
-    def _get_model_location(self) -> str | Path:
-        """Return the model identifier or its resolved local storage directory."""
-        return resolve_model_location(self.model_id, self.model_path, self.hf_token)
-
     def _build_model(self) -> tuple[Any, Any]:
         """Construct the tokenizer and model for the configured checkpoint."""
         if not hasattr(self.runtime.auto_model, "from_pretrained") or not hasattr(self.runtime.auto_tokenizer, "from_pretrained"):
@@ -98,7 +85,7 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         load_kwargs: dict[str, Any] = {"cache_dir": str(self.model_path) if self.model_path is not None else None}
         if self.hf_token is not None:
             load_kwargs["token"] = self.hf_token
-        model_location = self._get_model_location()
+        model_location = resolve_model_location(self.model_id, self.model_path, self.hf_token)
         tokenizer = self.runtime.auto_tokenizer.from_pretrained(model_location, **load_kwargs)
         model = self.runtime.auto_model.from_pretrained(model_location, **load_kwargs)
         if hasattr(model, "to"):

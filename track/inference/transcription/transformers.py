@@ -3,29 +3,22 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any, Callable
 
 from track.contracts import BaseTranscriptionModel, TranscriptionResult
 from track.utils import prepare_audio_input
+from track.utils.runtime import build_missing_optional_dependency_loader, configure_hugging_face_access
 
 logger = logging.getLogger(__name__)
-
-
-class _MissingTransformersPipeline:
-    """Fallback loader that raises a runtime error when transformers is absent."""
-
-    def __call__(self, *_: object, **__: object) -> Any:
-        raise RuntimeError("transformers is not installed.")
 
 
 def _load_transformers_pipeline() -> Callable[..., Any]:
     """Import the Hugging Face pipeline lazily so tests can patch it cleanly."""
     try:
         from transformers import pipeline
-    except ModuleNotFoundError:
-        return _MissingTransformersPipeline()
+    except ModuleNotFoundError as exc:
+        return build_missing_optional_dependency_loader("transformers", exc)
     return pipeline
 
 
@@ -48,17 +41,10 @@ class TransformersTranscriptionModel(BaseTranscriptionModel):
         self.pipeline: Any | None = None
         self._pipeline_factory = _load_transformers_pipeline()
         try:
-            self._configure_hugging_face_access()
+            configure_hugging_face_access(self.hf_token)
             self.pipeline = self._build_pipeline()
         except Exception as exc:  # pragma: no cover - optional runtime path
             self.load_error = exc
-
-    def _configure_hugging_face_access(self) -> None:
-        """Expose the optional Hugging Face token to the runtime."""
-        if self.hf_token is None:
-            return
-        os.environ.setdefault("HF_TOKEN", self.hf_token)
-        os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", self.hf_token)
 
     def _build_pipeline(self) -> Any:
         """Construct the text-to-speech pipeline for the configured model."""

@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import dataclass, field
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import unquote, urlparse
 import time
 
@@ -414,6 +414,29 @@ def _stream_chat_completion_chunks(
     yield _build_chat_completion_chunk(model=model, chunk_id=chunk_id, created=created, finish_reason="stop")
 
 
+def _stream_chat_completion_with_cleanup(
+    *,
+    model: str,
+    text_chunks: Iterator[str],
+    cleanup: Callable[[], None],
+) -> Iterator[ChatCompletionChunk]:
+    """Stream chat completion chunks and always run cleanup afterwards.
+
+    Parameters:
+        model: Model identifier included in emitted stream chunks.
+        text_chunks: Iterator of assistant text deltas from the local backend.
+        cleanup: Cleanup callback that releases temporary files or other
+            resources after streaming completes.
+
+    Returns:
+        Iterator of OpenAI-style chat completion chunks.
+    """
+    try:
+        yield from _stream_chat_completion_chunks(model=model, text_chunks=text_chunks)
+    finally:
+        cleanup()
+
+
 def _normalize_embedding_input(input_value: str | list[str]) -> str | list[str]:
     """Return embedding input in the subset supported by the local adapter."""
     if isinstance(input_value, str):
@@ -643,17 +666,11 @@ class _ChatCompletionsResource:
             raise RuntimeError("No local AI backend is bound to this client.")
         if stream:
             compiled_messages = _compile_messages(messages)
-
-            def _stream() -> Iterator[ChatCompletionChunk]:
-                try:
-                    yield from _stream_chat_completion_chunks(
-                        model=model,
-                        text_chunks=self.local_ai.stream_chat(compiled_messages.messages),
-                    )
-                finally:
-                    compiled_messages.cleanup()
-
-            return _stream()
+            return _stream_chat_completion_with_cleanup(
+                model=model,
+                text_chunks=self.local_ai.stream_chat(compiled_messages.messages),
+                cleanup=compiled_messages.cleanup,
+            )
 
         compiled_messages = _compile_messages(messages)
         try:
@@ -795,16 +812,14 @@ class _AsyncChatCompletionsResource:
             raise RuntimeError("No local AI backend is bound to this client.")
         if stream:
             compiled_messages = _compile_messages(messages)
-
             async def _stream() -> AsyncIterator[ChatCompletionChunk]:
-                try:
-                    for chunk in _stream_chat_completion_chunks(
-                        model=model,
-                        text_chunks=self.local_ai.stream_chat(compiled_messages.messages),
-                    ):
-                        yield chunk
-                finally:
-                    compiled_messages.cleanup()
+                """Yield streamed chat chunks while ensuring cleanup runs."""
+                for chunk in _stream_chat_completion_with_cleanup(
+                    model=model,
+                    text_chunks=self.local_ai.stream_chat(compiled_messages.messages),
+                    cleanup=compiled_messages.cleanup,
+                ):
+                    yield chunk
 
             return _stream()
         return _ChatCompletionsResource(local_ai=self.local_ai).create(

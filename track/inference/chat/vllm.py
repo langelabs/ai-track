@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any, Callable
 
 from track.contracts import AiModel, BaseChatLLM, ChatGenerationConfig, Message, TextContentPart
 from track.utils import resolve_model_location
+from track.utils.runtime import build_missing_optional_dependency_loader, configure_hugging_face_access
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +28,10 @@ def _load_vllm_runtime() -> VLLMRuntime:
     try:
         from vllm import LLM, SamplingParams
     except ModuleNotFoundError as exc:
-        def _missing(*_: object, _exc: ModuleNotFoundError = exc, **__: object) -> Any:
-            raise RuntimeError("vllm is not installed.") from _exc
-
-        return VLLMRuntime(llm=_missing, sampling_params=_missing)
+        return VLLMRuntime(
+            llm=build_missing_optional_dependency_loader("vllm", exc),
+            sampling_params=build_missing_optional_dependency_loader("vllm", exc),
+        )
 
     return VLLMRuntime(llm=LLM, sampling_params=SamplingParams)
 
@@ -83,21 +83,10 @@ class VLLMChatLLM(BaseChatLLM):
         self.model: Any | None = None
         self.load_error: Exception | None = None
         try:
-            self._configure_hugging_face_access()
+            configure_hugging_face_access(self.hf_token)
             self.model = self._build_model()
         except Exception as exc:  # pragma: no cover - optional runtime path
             self.load_error = exc
-
-    def _configure_hugging_face_access(self) -> None:
-        """Expose the optional Hugging Face token to the runtime."""
-        if self.hf_token is None:
-            return
-        os.environ.setdefault("HF_TOKEN", self.hf_token)
-        os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", self.hf_token)
-
-    def _get_model_location(self) -> str | Path:
-        """Return the model identifier or its resolved local storage directory."""
-        return resolve_model_location(self.model_id, self.model_path, self.hf_token)
 
     def _build_model(self) -> Any:
         """Construct the vLLM engine with the configured model location."""
@@ -112,7 +101,7 @@ class VLLMChatLLM(BaseChatLLM):
             if torch.cuda.is_available():
                 dtype = "auto"
         return self.runtime.llm(
-            model=self._get_model_location(),
+            model=resolve_model_location(self.model_id, self.model_path, self.hf_token),
             dtype=dtype,
             download_dir=str(self.model_path) if self.model_path is not None else None,
             trust_remote_code=True,

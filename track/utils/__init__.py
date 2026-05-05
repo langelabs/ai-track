@@ -16,12 +16,15 @@ from .chat import (
 )
 from .downloads import configured_local_model_ids, download_configured_models, download_local_model_artifact
 from .model_storage import is_model_artifact_cached, resolve_model_location
+from .runtime import build_missing_optional_dependency_loader, configure_hugging_face_access
 from .transcription import PreparedAudioInput, prepare_audio_input
 
 __all__ = [
     "PreparedAudioInput",
     "audio_chunks_to_wav",
     "configured_local_model_ids",
+    "build_missing_optional_dependency_loader",
+    "configure_hugging_face_access",
     "download_configured_models",
     "download_local_model_artifact",
     "ensure_user_first_after_system",

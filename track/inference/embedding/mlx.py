@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from track.contracts import BaseEmbeddingModel
-from track.utils import resolve_model_location
+from track.utils.model_storage import resolve_model_location
+from track.utils.runtime import build_missing_optional_dependency_loader
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,10 +26,11 @@ def _load_mlx_embedding_runtime() -> MLXEmbeddingRuntime:
         from mlx_lm import load
         import mlx.core as mx
     except ModuleNotFoundError as exc:
-        def _missing(*_: object, _exc: ModuleNotFoundError = exc, **__: object) -> Any:
-            raise RuntimeError("mlx_lm is not installed.") from _exc
-
-        return MLXEmbeddingRuntime(load=_missing, array=None, to_float32=None)
+        return MLXEmbeddingRuntime(
+            load=build_missing_optional_dependency_loader("mlx_lm", exc),
+            array=None,
+            to_float32=None,
+        )
 
     def _to_float32(arr: Any) -> Any:
         """Cast an MLX array to float32 for safe conversion."""
@@ -57,13 +59,9 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
         self.tokenizer: Any | None = None
         self.load_error: Exception | None = None
         try:
-            self.model, self.tokenizer = self.runtime.load(self._get_model_location())
+            self.model, self.tokenizer = self.runtime.load(resolve_model_location(self.model_id, self.model_path, self.hf_token))
         except Exception as exc:  # pragma: no cover - optional runtime path
             self.load_error = exc
-
-    def _get_model_location(self) -> str | Path:
-        """Return the model identifier or its resolved local storage directory."""
-        return resolve_model_location(self.model_id, self.model_path, self.hf_token)
 
     def _ensure_ready(self) -> None:
         """Reject calls when the MLX runtime failed to load."""

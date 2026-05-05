@@ -15,6 +15,7 @@ from track.inference.audio.models import AudioModelConfig
 from track.utils import normalize_audio_response_format, parse_audio_duration
 from track.utils.audio import audio_chunks_to_wav
 from track.utils.model_storage import resolve_model_location
+from track.utils.runtime import build_missing_optional_dependency_loader
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +25,7 @@ def _load_mlx_audio_load() -> object:
     try:
         tts_utils_module = import_module("mlx_audio.tts.utils")
     except ModuleNotFoundError as exc:
-        def _missing(*_: object, _exc: ModuleNotFoundError = exc, **__: object) -> Any:
-            raise RuntimeError("mlx-audio is not installed.") from _exc
-
-        return _missing
+        return build_missing_optional_dependency_loader("mlx-audio", exc)
     if hasattr(tts_utils_module, "load"):
         return tts_utils_module.load
     if hasattr(tts_utils_module, "load_model"):
@@ -95,11 +93,7 @@ class MLXAudioModel(BaseAudioModel):
         self.model_id = config.model_id
         self.sample_rate = config.sample_rate
         self.model_path = Path(model_path) if model_path is not None else None
-        self._resolved_model_location = resolve_model_location(
-            self.model_id,
-            self.model_path,
-            hf_token,
-        )
+        self._resolved_model_location = resolve_model_location(self.model_id, self.model_path, hf_token)
         self._model: Any | None = None
         self._model_load_lock = Lock()
         self.load_error: Exception | None = None

@@ -71,10 +71,6 @@ class MfluxImageGenerationModel(BaseImageGenerationModel):
             self.load_error = exc
         self._generation_lock = threading.Lock()
 
-    def _get_model_location(self) -> str | Path:
-        """Return the model identifier or its resolved local storage directory."""
-        return resolve_model_location(self.model_id, self.model_path, self.hf_token)
-
     def _build_model(self) -> Any:
         """Construct the single loaded MFLUX model instance."""
         if self.runtime is None:
@@ -82,7 +78,7 @@ class MfluxImageGenerationModel(BaseImageGenerationModel):
         return self.runtime.model_class(
             model_config=resolve_model_config(self.model_id),
             quantize=self.quantize,
-            model_path=self._get_model_location(),
+            model_path=resolve_model_location(self.model_id, self.model_path, self.hf_token),
         )
 
     def generate_image(
