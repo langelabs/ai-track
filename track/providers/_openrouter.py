@@ -4,56 +4,42 @@ from __future__ import annotations
 
 from typing import Any
 
-from track.contracts import AiModel, AiProvider, RemoteClientFactory
-
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-
-
-def _default_remote_client_factory(*, api_key: str | None, base_url: str | None) -> Any:
-    """Return a remote sync client when the OpenAI SDK is installed."""
-    from track.inference.openai import create_remote_client
-
-    return create_remote_client(api_key=api_key, base_url=base_url)
-
-
-def _default_remote_async_client_factory(*, api_key: str | None, base_url: str | None) -> Any:
-    """Return a remote async client when the OpenAI SDK is installed."""
-    from track.inference.openai import create_remote_async_client
-
-    return create_remote_async_client(api_key=api_key, base_url=base_url)
+from openai import Client
+from .__base import AiProvider
+from track.contracts import AiModel
+from track.utils.openai import get_openai_client, get_async_openai_client
 
 
 class OpenRouterProvider(AiProvider):
     """Provide OpenRouter clients for remote OpenAI-compatible models."""
 
-    def __init__(
-        self,
-        *,
-        models: list[AiModel] | None = None,
-        api_key: str | None = None,
-        base_url: str | None = OPENROUTER_BASE_URL,
-        client_factory: RemoteClientFactory | None = None,
-        async_client_factory: RemoteClientFactory | None = None,
-    ) -> None:
+    def __init__(self, model: AiModel, api_key: str | None = None) -> None:
         """Initialize the provider with models and OpenRouter credentials."""
-        self.api_key = api_key
-        self.base_url = base_url
-        self._models = list(models or [])
-        self._client_factory = client_factory or _default_remote_client_factory
-        self._async_client_factory = async_client_factory or _default_remote_async_client_factory
+        super().__init__(model, api_key)
+        self.base_url = "https://openrouter.ai/api/v1"
+        self.loaded = True
+        self.downloaded = True
 
-    def get_models(self) -> list[AiModel]:
-        """Return the configured remote models."""
-        return list(self._models)
-
-    def get_client(self, model_name: str | None = None) -> Any:
+    def get_client(self) -> Client:
         """Return a sync OpenAI client for ``model_name``."""
-        if model_name is not None:
-            self.get_model(model_name)
-        return self._client_factory(api_key=self.api_key, base_url=self.base_url)
+        return get_openai_client(api_key=self._api_key, base=self.base_url)
 
     def get_async_client(self, model_name: str | None = None) -> Any:
         """Return an async OpenAI client for ``model_name``."""
-        if model_name is not None:
-            self.get_model(model_name)
-        return self._async_client_factory(api_key=self.api_key, base_url=self.base_url)
+        return get_async_openai_client(api_key=self._api_key, base=self.base_url)
+
+    async def download(self, model_dir: str | None = None) -> bool:
+        """
+        Download a model from HuggingFace. Only for compatibility purposes as online. Will return true instantly.
+        :param model_dir:
+        :return: True
+        """
+        return True
+
+    async def load(self, model_dir: str | None = None) -> bool:
+        """
+        Only for compatibility purposes as online. Will return true instantly.
+        :param model_dir: unused
+        :return: True
+        """
+        return True

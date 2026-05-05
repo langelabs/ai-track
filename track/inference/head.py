@@ -7,7 +7,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal
+from typing import Literal
 import sys
 
 from track.contracts import (
@@ -23,8 +23,7 @@ from track.contracts import (
     ImageGenerationCallback,
     ImageGenerationEvent,
     Message,
-    TranscriptionResult,
-    build_model_alias,
+    TranscriptionResult
 )
 from track.inference.audio.models import AudioModelConfig
 from track.inference.audio import create_audio_model
@@ -229,7 +228,7 @@ class AiInference(AiProvider):
                         type="audio",
                         status="downloaded",
                         model=audio_config.model_id,
-                        alias=audio_config.alias or build_model_alias(audio_config.model_id),
+                        alias=audio_config.alias or audio_config.model_id
                     ),
                     runtime_model=runtime_models_by_type["audio"],
                 )
@@ -497,24 +496,3 @@ class AiInference(AiProvider):
         """Transcribe spoken audio into text."""
         transcription_model = self._require_transcription_model()
         return transcription_model.transcribe(audio=audio, language=language, model=model)
-
-
-def resolve_client(
-    local_ai: AiInference,
-    model: AiModel,
-    *,
-    remote_api_key: str | None = None,
-    remote_base_url: str | None = None,
-) -> Any:
-    """Return the resolved client for one model."""
-    del remote_api_key, remote_base_url
-    return local_ai.get_client(model.model)
-
-
-def get_client(local_ai: AiInference, model: AiModel) -> Any:
-    """Return the resolved client for one model."""
-    return resolve_client(local_ai, model)
-
-
-LocalAI = AiInference
-"""Compatibility alias for the universal local inference runtime."""

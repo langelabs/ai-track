@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from .model_storage import resolve_model_location
 
-if TYPE_CHECKING:
-    from track.contracts import AiModel
-    from track.inference.audio.models import AudioModelConfig
-    from track.inference.transcription.models import TranscriptionModelConfig
+from track.contracts import AiModel
+from track.inference.audio.models import AudioModelConfig
+from track.inference.transcription.models import TranscriptionModelConfig
+
 
 
 def download_local_model_artifact(
