@@ -19,7 +19,7 @@ def create_image_generation_model(
         from track.inference.image.diffusers import DiffusersFluxImageModel
 
         return DiffusersFluxImageModel(
-            model_id=config.model,
+            model_id=config.model_id,
             device=device,
             model_path=model_path,
         )
@@ -27,7 +27,7 @@ def create_image_generation_model(
         from track.inference.image.mflux import MfluxImageGenerationModel
 
         return MfluxImageGenerationModel(
-            model_id=config.model,
+            model_id=config.model_id,
             quantize=(config.inference_config.quantize if config.inference_config is not None else None),
             hf_token=hf_token,
             model_path=model_path,

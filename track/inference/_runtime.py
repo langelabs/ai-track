@@ -1,18 +1,17 @@
-"""Composition root for the universal inference runtime."""
+"""Internal local inference runtime used by the provider facade."""
 
 from __future__ import annotations
 
 import logging
+import sys
 from collections import defaultdict
 from collections.abc import Iterator
 from pathlib import Path
 from threading import Lock
 from typing import Literal
-import sys
 
 from track.contracts import (
     AiModel,
-    AiModelState,
     AudioGenerationResult,
     BaseAudioModel,
     BaseChatLLM,
@@ -22,14 +21,14 @@ from track.contracts import (
     ImageGenerationCallback,
     ImageGenerationEvent,
     Message,
-    TranscriptionResult
+    SupportsOpenAICompatibility,
+    TranscriptionResult,
 )
-from track.inference.audio.models import AudioModelConfig
 from track.inference.audio import create_audio_model
+from track.inference.audio.models import AudioModelConfig
 from track.inference.chat import create_chat_model
 from track.inference.embedding import create_embedding_model
 from track.inference.image.models import create_image_generation_model
-from track.inference.openai import AsyncClient, Client
 from track.inference.transcription import create_transcription_model
 from track.inference.transcription.models import TranscriptionModelConfig
 from track.utils import (
@@ -40,9 +39,6 @@ from track.utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-
 
 
 def detect_backend() -> Literal["cuda", "mlx"] | None:
@@ -58,31 +54,28 @@ def detect_backend() -> Literal["cuda", "mlx"] | None:
     return None
 
 
-class AiInference:
-    """Compose embedding, chat, image-generation, and audio providers."""
+class LocalRuntime(SupportsOpenAICompatibility):
+    """Compose the local inference backends behind one compatibility interface."""
 
     def __init__(
         self,
+        model: AiModel,
+        *,
         backend: Literal["cuda", "mlx"] | None = None,
         hf_token: str | None = None,
         model_path: str | Path | None = None,
-        embedding_config: AiModel | None = None,
-        chat_config: AiModel | None = None,
-        image_generation_config: AiModel | None = None,
-        audio_config: AudioModelConfig | None = None,
-        transcription_config: TranscriptionModelConfig | None = None,
-        autoload: bool = True,
     ) -> None:
-        """Build the configured local AI providers."""
+        """Store the configured model and prepare runtime bookkeeping."""
+        self.model = model
         self.device = get_compute_device()
         self.backend = backend if backend is not None else detect_backend()
         self.hf_token = hf_token
         self.model_path = Path(model_path) if model_path is not None else None
-        self.embedding_config = embedding_config
-        self.chat_config = chat_config
-        self.image_generation_config = image_generation_config
-        self.audio_config = audio_config
-        self.transcription_config = transcription_config
+        self.embedding_config: AiModel | None = model
+        self.chat_config: AiModel | None = model
+        self.image_generation_config: AiModel | None = model
+        self.audio_config = AudioModelConfig(model_id=model.model_id, alias=model.alias, default=True)
+        self.transcription_config = TranscriptionModelConfig(model_id=model.model_id, alias=model.alias, default=True)
         self.embedding_model: BaseEmbeddingModel | None = None
         self.image_model: BaseImageGenerationModel | None = None
         self.audio_model: BaseAudioModel | None = None
@@ -93,11 +86,9 @@ class AiInference:
         self._download_progress: dict[str, float] = {}
         self._artifact_download_locks: defaultdict[str, Lock] = defaultdict(Lock)
         self._image_load_attempted = False
-        if autoload:
-            self.load()
 
     def _note_model_download_progress(self, model_id: str, value: float | None) -> None:
-        """Record or clear live download percentage for one model id (thread-safe)."""
+        """Record or clear live download percentage for one model id."""
         with self._download_progress_lock:
             if value is None:
                 self._download_progress.pop(model_id, None)
@@ -122,11 +113,11 @@ class AiInference:
                 model_id,
                 hf_token=self.hf_token,
                 model_path=self.model_path,
-                on_progress=lambda v: self._note_model_download_progress(model_id, v),
+                on_progress=lambda value: self._note_model_download_progress(model_id, value),
             )
 
-    def prefetch_configured_artifacts(self) -> None:
-        """Download every configured model snapshot (no MLX weight load)."""
+    def download(self) -> None:
+        """Download every configured local model snapshot."""
         for model_id in configured_local_model_ids(
             chat_config=self.chat_config,
             embedding_config=self.embedding_config,
@@ -136,119 +127,15 @@ class AiInference:
         ):
             self.ensure_model_artifact_downloaded(model_id)
 
-    def _resolve_local_model_status(
-        self,
-        model: AiModel,
-        *,
-        runtime_model: object | None,
-    ) -> AiModel:
-        """Return one local model with runtime-derived availability status."""
-        pct = self.get_model_download_percentage(model.model)
-        if pct is not None:
-            return AiModel(
-                default=model.default,
-                location=model.location,
-                type=model.type,
-                status="downloading",
-                model=model.model,
-                alias=model.alias,
-                inference_config=model.inference_config,
-                capabilities=model.capabilities,
-                state=AiModelState(download_percentage=pct),
-            )
-        if runtime_model is not None:
-            return AiModel(
-                default=model.default,
-                location=model.location,
-                type=model.type,
-                status="available",
-                model=model.model,
-                alias=model.alias,
-                inference_config=model.inference_config,
-                capabilities=model.capabilities,
-                state=None,
-            )
-        if self.is_model_artifact_cached(model.model):
-            return AiModel(
-                default=model.default,
-                location=model.location,
-                type=model.type,
-                status="downloaded",
-                model=model.model,
-                alias=model.alias,
-                inference_config=model.inference_config,
-                capabilities=model.capabilities,
-                state=None,
-            )
-        return AiModel(
-            default=model.default,
-            location=model.location,
-            type=model.type,
-            status=model.status,
-            model=model.model,
-            alias=model.alias,
-            inference_config=model.inference_config,
-            capabilities=model.capabilities,
-            state=None,
-        )
-
-    def _build_models(self) -> list[AiModel]:
-        """Construct the current local model registry."""
-        models: list[AiModel] = []
-        configured_local_models = [
-            model
-            for model in (
-                self.chat_config,
-                self.embedding_config,
-                self.image_generation_config,
-            )
-            if model is not None
-        ]
-        runtime_models_by_type = {
-            "llm": self.chat_llm,
-            "embedding": self.embedding_model,
-            "image": self.image_model,
-            "audio": self.audio_model,
-        }
-        for configured_local_model in configured_local_models:
-            models.append(
-                self._resolve_local_model_status(
-                    configured_local_model,
-                    runtime_model=runtime_models_by_type.get(configured_local_model.type),
-                )
-            )
-        audio_config = self.audio_config
-        if audio_config is not None:
-            models.append(
-                self._resolve_local_model_status(
-                    AiModel(
-                        default=audio_config.default,
-                        location="local",
-                        type="audio",
-                        status="downloaded",
-                        model=audio_config.model_id,
-                        alias=audio_config.alias or audio_config.model_id
-                    ),
-                    runtime_model=runtime_models_by_type["audio"],
-                )
-            )
-        return models
-
-    def get_models(self) -> list[AiModel]:
-        """Return the currently configured local models."""
-        return self._build_models()
-
     def _ensure_embedding_loaded(self) -> None:
         """Resolve artifacts and construct the embedding backend when configured."""
-        if self.embedding_config is None:
-            return
-        if self.backend is None:
+        if self.embedding_config is None or self.backend is None:
             return
         with self._load_lock:
             if self.embedding_model is not None:
                 return
             try:
-                self.ensure_model_artifact_downloaded(self.embedding_config.model)
+                self.ensure_model_artifact_downloaded(self.embedding_config.model_id)
                 self.embedding_model = create_embedding_model(
                     self.backend,
                     self.embedding_config,
@@ -261,26 +148,28 @@ class AiInference:
 
     def _ensure_image_loaded(self) -> None:
         """Resolve artifacts and construct the image backend when configured."""
-        if self.image_generation_config is None:
-            return
-        if self.backend is None:
+        if self.image_generation_config is None or self.backend is None:
             return
         with self._load_lock:
             if self._image_load_attempted:
                 return
             self._image_load_attempted = True
             try:
-                self.ensure_model_artifact_downloaded(self.image_generation_config.model)
-                self.image_model = self._create_image_backend(self.backend, self.image_generation_config)
+                self.ensure_model_artifact_downloaded(self.image_generation_config.model_id)
+                self.image_model = create_image_generation_model(
+                    self.backend,
+                    self.image_generation_config,
+                    self.device,
+                    self.hf_token,
+                    self.model_path,
+                )
             except Exception as exc:
                 logger.warning("Image backend could not be loaded: %s", exc)
                 self.image_model = None
 
     def _ensure_audio_loaded(self) -> None:
         """Resolve artifacts and construct the audio backend when configured."""
-        if self.audio_config is None:
-            return
-        if self.backend is None:
+        if self.audio_config is None or self.backend is None:
             return
         with self._load_lock:
             if self.audio_model is not None:
@@ -299,9 +188,7 @@ class AiInference:
 
     def _ensure_transcription_loaded(self) -> None:
         """Resolve artifacts and construct the transcription backend when configured."""
-        if self.transcription_config is None:
-            return
-        if self.backend is None:
+        if self.transcription_config is None or self.backend is None:
             return
         with self._load_lock:
             if self.transcription_model is not None:
@@ -320,15 +207,13 @@ class AiInference:
 
     def _ensure_chat_loaded(self) -> None:
         """Resolve artifacts and construct the chat backend when configured."""
-        if self.chat_config is None:
-            return
-        if self.backend is None:
+        if self.chat_config is None or self.backend is None:
             return
         with self._load_lock:
             if self.chat_llm is not None:
                 return
             try:
-                self.ensure_model_artifact_downloaded(self.chat_config.model)
+                self.ensure_model_artifact_downloaded(self.chat_config.model_id)
                 self.chat_llm = create_chat_model(
                     self.backend,
                     self.chat_config,
@@ -340,7 +225,8 @@ class AiInference:
                 self.chat_llm = None
 
     def load(self) -> None:
-        """Download configured model artifacts and initialize every configured backend once."""
+        """Download configured artifacts and initialize every backend once."""
+        self.download()
         self._ensure_embedding_loaded()
         self._ensure_image_loaded()
         self._ensure_audio_loaded()
@@ -366,7 +252,7 @@ class AiInference:
         except FileNotFoundError as error:
             logger.warning(
                 "Image generation model '%s' could not be loaded: %s. Image generation will remain disabled.",
-                image_generation_config.model,
+                image_generation_config.model_id,
                 error,
             )
             return None
@@ -406,53 +292,17 @@ class AiInference:
             raise RuntimeError("The audio model is not loaded.")
         return self.audio_model
 
-    def supports_local_model(self, model: AiModel) -> bool:
-        """Return whether the current runtime can serve ``model`` locally."""
-        if model.location != "local":
-            return False
-        try:
-            if model.type == "llm":
-                self._ensure_chat_loaded()
-                return self.chat_llm is not None
-            if model.type == "embedding":
-                self._ensure_embedding_loaded()
-                return self.embedding_model is not None
-            if model.type == "image":
-                self._ensure_image_loaded()
-                return self.image_model is not None
-            if model.type == "audio":
-                self._ensure_audio_loaded()
-                return self.audio_model is not None
-        except Exception:
-            return False
-        return False
-
     def embed(self, content: str | list[str]) -> list[list[float]] | list[float]:
         """Generate embeddings for one string or a batch of strings."""
-        embedding_model = self._require_embedding_model()
-        return embedding_model.embed(content)
-
-    def get_client(self, model_name: str | None = None) -> Client:
-        """Return a sync OpenAI-compatible client bound to this instance."""
-        if model_name is not None:
-            self.get_model(model_name)
-        return Client(local_ai=self)
-
-    def get_async_client(self, model_name: str | None = None) -> AsyncClient:
-        """Return an async OpenAI-compatible client bound to this instance."""
-        if model_name is not None:
-            self.get_model(model_name)
-        return AsyncClient(local_ai=self)
+        return self._require_embedding_model().embed(content)
 
     def chat(self, messages: list[Message]) -> Message:
         """Delegate chat generation to the selected backend."""
-        chat_llm = self._require_chat_llm()
-        return chat_llm.chat(messages)
+        return self._require_chat_llm().chat(messages)
 
     def stream_chat(self, messages: list[Message]) -> Iterator[str]:
         """Delegate token streaming to the selected chat backend."""
-        chat_llm = self._require_chat_llm()
-        return chat_llm.stream_chat(messages)
+        return self._require_chat_llm().stream_chat(messages)
 
     def generate_image(
         self,
@@ -462,8 +312,7 @@ class AiInference:
         callback: ImageGenerationCallback | None = None,
     ) -> object:
         """Generate an image from a text prompt."""
-        image_model = self._require_image_model()
-        return image_model.generate_image(prompt=prompt, size=size, steps=steps, callback=callback)
+        return self._require_image_model().generate_image(prompt=prompt, size=size, steps=steps, callback=callback)
 
     def stream_image(
         self,
@@ -472,8 +321,7 @@ class AiInference:
         steps: int = 4,
     ) -> Iterator[ImageGenerationEvent]:
         """Delegate image progress streaming to the selected image backend."""
-        image_model = self._require_image_model()
-        return image_model.stream_image(prompt=prompt, size=size, steps=steps)
+        return self._require_image_model().stream_image(prompt=prompt, size=size, steps=steps)
 
     def generate_speech(
         self,
@@ -483,8 +331,12 @@ class AiInference:
         model: str | None = None,
     ) -> AudioGenerationResult:
         """Generate spoken audio from a text prompt."""
-        audio_model = self._require_audio_model()
-        return audio_model.generate_speech(text=text, voice=voice, response_format=response_format, model=model)
+        return self._require_audio_model().generate_speech(
+            text=text,
+            voice=voice,
+            response_format=response_format,
+            model=model,
+        )
 
     def transcribe(
         self,
@@ -493,5 +345,4 @@ class AiInference:
         model: str | None = None,
     ) -> TranscriptionResult:
         """Transcribe spoken audio into text."""
-        transcription_model = self._require_transcription_model()
-        return transcription_model.transcribe(audio=audio, language=language, model=model)
+        return self._require_transcription_model().transcribe(audio=audio, language=language, model=model)

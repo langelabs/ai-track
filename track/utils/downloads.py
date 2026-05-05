@@ -38,7 +38,7 @@ def configured_local_model_ids(
     ids: set[str] = set()
     for config in (chat_config, embedding_config, image_generation_config):
         if config is not None:
-            ids.add(config.model)
+            ids.add(config.model_id)
     if audio_config is not None:
         ids.add(audio_config.model_id)
     if transcription_config is not None:

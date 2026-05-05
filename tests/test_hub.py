@@ -1,128 +1,35 @@
 from __future__ import annotations
 
+from importlib import import_module
+
 import pytest
 
 
-def test_hub_module_exports_public_router() -> None:
-    from track import hub
+def test_hub_uses_canonical_name_only() -> None:
+    hub_module = import_module("track.hub")
 
-    assert hub.AiHub is not None
-    assert hub.ModelRouter is hub.AiHub
-    assert hub.Hub is hub.AiHub
-    assert not hasattr(hub, "resolve_client")
-    assert not hasattr(hub, "get_client")
+    assert hub_module.AiHub.__name__ == "AiHub"
+    assert not hasattr(hub_module, "Hub")
+    assert not hasattr(hub_module, "ModelRouter")
 
 
-def test_hub_resolves_clients_by_canonical_model_name() -> None:
-    from track.contracts import AiModel, AiProvider
+def test_hub_routes_local_models_to_local_provider() -> None:
+    from track.contracts import AiModel
     from track.hub import AiHub
 
-    sync_client = object()
-    async_client = object()
+    model = AiModel(provider="local", model_id="mlx-community/test", alias="test")
+    hub = AiHub(models=[model], hugging_face_secret="hf-secret", model_dir="/tmp/models")
 
-    class FakeProvider(AiProvider):
-        def __init__(self) -> None:
-            self.client_calls: list[str | None] = []
-            self.async_calls: list[str | None] = []
-            self._models = [
-                AiModel(
-                    default=True,
-                    location="local",
-                    type="llm",
-                    status="available",
-                    model="mlx-community/test",
-                    alias="test",
-                )
-            ]
-
-        def get_models(self) -> list[AiModel]:
-            return list(self._models)
-
-        def get_client(self, model_name: str | None = None) -> object:
-            self.client_calls.append(model_name)
-            return sync_client
-
-        def get_async_client(self, model_name: str | None = None) -> object:
-            self.async_calls.append(model_name)
-            return async_client
-
-    provider = FakeProvider()
-    hub = AiHub(providers=[provider])
-
-    assert hub.get_client("mlx-community/test") is sync_client
-    assert hub.get_async_client("mlx-community/test") is async_client
-    assert provider.client_calls == ["mlx-community/test"]
-    assert provider.async_calls == ["mlx-community/test"]
+    provider = hub._providers_by_model_id["mlx-community/test"]
+    assert provider.model == model
+    assert provider.model.model_id == "mlx-community/test"
 
 
-def test_hub_rejects_alias_lookup() -> None:
-    from track.contracts import AiModel, AiProvider
+def test_hub_rejects_unknown_provider() -> None:
+    from track.contracts import AiModel
     from track.hub import AiHub
+    from track.exceptions import ProviderNotSupported
 
-    class FakeProvider(AiProvider):
-        def __init__(self) -> None:
-            self._models = [
-                AiModel(
-                    default=True,
-                    location="local",
-                    type="llm",
-                    status="available",
-                    model="mlx-community/test",
-                    alias="friendly-name",
-                )
-            ]
-
-        def get_models(self) -> list[AiModel]:
-            return list(self._models)
-
-        def get_client(self, model_name: str | None = None) -> object:
-            return object()
-
-        def get_async_client(self, model_name: str | None = None) -> object:
-            return object()
-
-    hub = AiHub(providers=[FakeProvider()])
-
-    with pytest.raises(LookupError):
-        hub.get_client("friendly-name")
-
-
-def test_hub_uses_supplied_model_registry() -> None:
-    from track.contracts import AiModel, AiProvider
-    from track.hub import AiHub
-
-    class FakeProvider(AiProvider):
-        def __init__(self) -> None:
-            self._models = [
-                AiModel(
-                    default=True,
-                    location="open-router",
-                    type="llm",
-                    status="available",
-                    model="openrouter/test",
-                    alias="remote",
-                )
-            ]
-
-        def get_models(self) -> list[AiModel]:
-            return list(self._models)
-
-        def get_client(self, model_name: str | None = None) -> object:
-            return object()
-
-        def get_async_client(self, model_name: str | None = None) -> object:
-            return object()
-
-    models = [
-        AiModel(
-            default=True,
-            location="open-router",
-            type="llm",
-            status="available",
-            model="openrouter/test",
-            alias="remote",
-        )
-    ]
-    hub = AiHub(providers=[FakeProvider()], models=models)
-
-    assert hub.models == models
+    model = AiModel(provider="local", model_id="mlx-community/test", alias="test")
+    with pytest.raises(ProviderNotSupported):
+        AiHub().add_model(model.model_copy(update={"provider": "unsupported"}))

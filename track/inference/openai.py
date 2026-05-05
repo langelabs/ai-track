@@ -1,4 +1,4 @@
-"""OpenAI-compatible local client adapters for ``LocalAI``."""
+"""OpenAI-compatible local client adapters for the internal local runtime."""
 
 from __future__ import annotations
 
@@ -1155,3 +1155,9 @@ class AsyncClient:
         self.embeddings = _AsyncEmbeddingsResource(local_ai=local_ai)
         self.images = _AsyncImagesResourceContainer(local_ai=local_ai)
         self.audio = _AsyncAudioResource(local_ai=local_ai)
+
+
+def create_remote_client(*, api_key: str | None, base_url: str | None) -> Client:
+    """Create a minimal remote-style sync client for compatibility tests and callers."""
+    normalized_base_url = None if base_url is None else base_url.rstrip("/") + "/"
+    return Client(base_url=normalized_base_url, api_key=api_key)

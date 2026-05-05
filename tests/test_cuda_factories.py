@@ -9,11 +9,8 @@ def test_chat_factory_uses_cuda_backend() -> None:
     from track.inference.chat.models import create_chat_model
 
     config = AiModel(
-        default=True,
-        location="local",
-        type="llm",
-        status="available",
-        model="cuda/chat",
+        provider="local",
+        model_id="cuda/chat",
         alias="chat",
     )
 
@@ -42,11 +39,8 @@ def test_embedding_factory_uses_cuda_backend() -> None:
     from track.inference.embedding.models import create_embedding_model
 
     config = AiModel(
-        default=True,
-        location="local",
-        type="embedding",
-        status="available",
-        model="cuda/embedding",
+        provider="local",
+        model_id="cuda/embedding",
         alias="embedding",
     )
     sentinel = SimpleNamespace(backend_name="cuda-embedding")

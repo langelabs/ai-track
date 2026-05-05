@@ -18,7 +18,7 @@ def create_embedding_model(
         from track.inference.embedding.mlx import MLXEmbeddingModel
 
         return MLXEmbeddingModel(
-            model_id=config.model,
+            model_id=config.model_id,
             model_path=model_path,
             hf_token=hf_token,
         )
@@ -26,7 +26,7 @@ def create_embedding_model(
         from track.inference.embedding.transformers import TransformersEmbeddingModel
 
         return TransformersEmbeddingModel(
-            model_id=config.model,
+            model_id=config.model_id,
             hf_token=hf_token,
             model_path=model_path,
         )

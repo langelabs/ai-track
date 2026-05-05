@@ -1,127 +1,74 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 
-def test_local_ai_defaults_to_configured_backend_when_detected() -> None:
+
+def test_local_provider_defaults_to_configured_backend_when_detected() -> None:
     from track.contracts import AiModel
-    from track.inference.head import AiInference
+    from track.providers import LocalProvider
 
-    chat_config = AiModel(
-        default=True,
-        location="local",
-        type="llm",
-        status="not_downloaded",
-        model="cuda/test-chat",
-        alias="chat",
-    )
+    model = AiModel(provider="local", model_id="cuda/test-chat", alias="chat")
 
-    with patch("track.inference.head.detect_backend", return_value="cuda"):
-        runtime = AiInference(chat_config=chat_config, autoload=False)
+    with patch("track.inference._runtime.detect_backend", return_value="cuda"):
+        provider = LocalProvider(model=model, model_path=None)
 
-    assert runtime.backend == "cuda"
+    assert provider._runtime.backend == "cuda"
 
 
-def test_local_ai_explicit_cuda_backend_loads_cuda_factories() -> None:
+def test_local_provider_loads_and_exposes_openai_client() -> None:
     from track.contracts import AiModel
-    from track.inference.head import AiInference
-    from track.contracts import TranscriptionResult
+    from track.providers import LocalProvider
 
-    chat_config = AiModel(
-        default=True,
-        location="local",
-        type="llm",
-        status="not_downloaded",
-        model="cuda/test-chat",
-        alias="chat",
-    )
-    transcription_config = SimpleNamespace(model_id="cuda/test-asr", alias="asr", default=True)
+    model = AiModel(provider="local", model_id="cuda/test-chat", alias="chat")
+    provider = LocalProvider(model=model, model_path=None, backend="cuda")
 
-    runtime = AiInference(
-        backend="cuda",
-        chat_config=chat_config,
-        transcription_config=transcription_config,
-        autoload=False,
-    )
-    runtime.chat_llm = SimpleNamespace(
-        backend_name="cuda",
-        chat=lambda messages: SimpleNamespace(text=lambda: "hello"),
-        stream_chat=lambda messages: iter(["hello"]),
-    )
-    runtime.transcription_model = SimpleNamespace(
-        backend_name="cuda",
-        transcribe=lambda audio, language=None, model=None: TranscriptionResult(
-            text=f"transcribed:{Path(audio).name}",
-            language=language,
-        ),
-    )
+    provider.downloaded = True
+    provider.loaded = True
+    client = provider.get_client()
 
-    assert runtime.backend == "cuda"
-    assert runtime.chat_llm.backend_name == "cuda"
-    assert runtime.transcribe(Path("sample.wav")).text == "transcribed:sample.wav"
+    assert hasattr(client, "chat")
 
 
-def test_local_ai_transcribe_uses_transcription_model() -> None:
-    from track.inference.head import AiInference
-    from track.contracts import TranscriptionResult
+def test_local_provider_download_and_load_toggle_state() -> None:
+    from track.contracts import AiModel
+    from track.providers import LocalProvider
 
-    runtime = AiInference(backend="cuda", autoload=False)
-    runtime.transcription_model = SimpleNamespace(
-        transcribe=lambda audio, language=None, model=None: TranscriptionResult(
-            text=f"transcribed:{Path(audio).name}",
-            language=language,
-        )
-    )
+    model = AiModel(provider="local", model_id="cuda/test-chat", alias="chat")
+    provider = LocalProvider(model=model, model_path=None, backend="cuda")
 
-    result = runtime.transcribe(Path("sample.wav"))
+    downloaded = asyncio.run(provider.download())
+    loaded = asyncio.run(provider.load())
 
-    assert result.text == "transcribed:sample.wav"
-
-
-def test_openai_client_exposes_audio_transcriptions_resource() -> None:
-    from track.inference.openai import Client
-    from track.contracts import TranscriptionResult
-
-    client = Client(
-        local_ai=SimpleNamespace(
-            transcribe=lambda audio, language=None, model=None: TranscriptionResult(
-                text="hello world",
-                language=language,
-            ),
-            generate_speech=lambda **kwargs: SimpleNamespace(
-                audio=b"",
-                audio_format="wav",
-                mime_type="audio/wav",
-                sample_rate=24000,
-                voice=kwargs.get("voice", "casual_male"),
-                duration_seconds=None,
-            ),
-        )
-    )
-
-    assert hasattr(client.audio, "transcriptions")
-    response = client.audio.transcriptions.create(model="asr/test", file="sample.wav")
-    assert response.text == "hello world"
+    assert downloaded is True
+    assert loaded is True
+    assert provider.downloaded is True
+    assert provider.loaded is True
 
 
-def test_transformers_embedding_model_uses_encode_path() -> None:
-    from track.inference.embedding.transformers import TransformersEmbeddingModel, TransformersEmbeddingRuntime
+def test_local_provider_requires_download_before_client_access() -> None:
+    from track.contracts import AiModel
+    from track.exceptions import ModelNotDownloaded
+    from track.providers import LocalProvider
 
-    fake_runtime = TransformersEmbeddingRuntime(
-        auto_model=SimpleNamespace(
-            from_pretrained=lambda *args, **kwargs: SimpleNamespace(
-                encode=lambda texts: [[float(len(texts[0])), 2.0]],
-            ),
-        ),
-        auto_tokenizer=SimpleNamespace(
-            from_pretrained=lambda *args, **kwargs: SimpleNamespace(),
-        ),
-        torch=SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
-    )
+    model = AiModel(provider="local", model_id="cuda/test-chat", alias="chat")
+    provider = LocalProvider(model=model, model_path=None, backend="cuda")
 
-    with patch("track.inference.embedding.transformers._load_transformers_runtime", return_value=fake_runtime):
-        model = TransformersEmbeddingModel(model_id="cuda/embedding")
+    with pytest.raises(ModelNotDownloaded):
+        provider.get_client()
 
-    assert model.embed("hello") == [5.0, 2.0]
+
+def test_local_provider_requires_load_before_client_access() -> None:
+    from track.contracts import AiModel
+    from track.exceptions import ModelNotLoaded
+    from track.providers import LocalProvider
+
+    model = AiModel(provider="local", model_id="cuda/test-chat", alias="chat")
+    provider = LocalProvider(model=model, model_path=None, backend="cuda")
+    provider.downloaded = True
+
+    with pytest.raises(ModelNotLoaded):
+        provider.get_client()

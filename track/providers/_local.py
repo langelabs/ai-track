@@ -1,19 +1,71 @@
-from openai import Client, AsyncClient
+"""Local provider implementation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Literal
+
+from track.contracts import AiModel
+from track.exceptions import ModelNotDownloaded, ModelNotLoaded
+from track.inference.openai import AsyncClient, Client
+from track.inference._runtime import LocalRuntime
 
 from .__base import AiProvider
 
+
 class LocalProvider(AiProvider):
+    """Provide OpenAI-compatible clients for a single local model."""
+
+    def __init__(
+        self,
+        model: AiModel,
+        api_key: str | None = None,
+        *,
+        backend: Literal["cuda", "mlx"] | None = None,
+        hf_token: str | None = None,
+        model_path: str | Path | None = None,
+    ) -> None:
+        """Store the local model and prepare the internal runtime."""
+        super().__init__(model, api_key)
+        self._runtime = LocalRuntime(
+            model=model,
+            backend=backend,
+            hf_token=hf_token,
+            model_path=model_path,
+        )
+
+    def _require_downloaded(self) -> None:
+        """Raise when the local artifacts are not available yet."""
+        if not self.downloaded:
+            raise ModelNotDownloaded(self.model.model_id)
+
+    def _require_loaded(self) -> None:
+        """Raise when the local model has not been loaded yet."""
+        if not self.loaded:
+            raise ModelNotLoaded(self.model.model_id)
+
     def get_client(self) -> Client:
-        pass # todo
+        """Return a sync OpenAI-compatible client bound to the loaded runtime."""
+        self._require_downloaded()
+        self._require_loaded()
+        return Client(local_ai=self._runtime)
 
     def get_async_client(self) -> AsyncClient:
-        pass # todo
+        """Return an async OpenAI-compatible client bound to the loaded runtime."""
+        self._require_downloaded()
+        self._require_loaded()
+        return AsyncClient(local_ai=self._runtime)
 
-    def download(self, model_dir:str|None = None) -> bool:
-        pass # todo
+    async def download(self, model_dir: str | None = None) -> bool:
+        """Download the local model artifacts from Hugging Face."""
+        self._runtime.download()
+        self.downloaded = True
+        return True
 
-    def load(self, model_dir:str|None = None) -> bool:
-        pass # todo
-
-
-
+    async def load(self, model_dir: str | None = None) -> bool:
+        """Load the local model into the available compute backend."""
+        if not self.downloaded:
+            await self.download(model_dir=model_dir)
+        self._runtime.load()
+        self.loaded = True
+        return True

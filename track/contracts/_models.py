@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 class InferenceConfig(BaseModel):
     """Describe optional inference-time overrides for one AI model."""
+
     max_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
@@ -17,6 +18,7 @@ class InferenceConfig(BaseModel):
 
 class AiModelCapabilities(BaseModel):
     """Describe supported input and output modalities for one AI model."""
+
     text_input: bool = False
     text_output: bool = False
 
@@ -32,6 +34,7 @@ class AiModelCapabilities(BaseModel):
 
 class AiModel(BaseModel):
     """Describe one selectable AI model exposed by the application."""
+
     provider: Literal["local", "open-router"]
     model_id: str
     alias: str

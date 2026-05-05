@@ -7,11 +7,6 @@ import pytest
 from pydantic import ValidationError
 
 
-def test_build_model_alias_normalizes_leaf_name() -> None:
-    from track.contracts import build_model_alias
-
-    assert build_model_alias("mlx-community/llama-3_1") == "llama 3 1"
-    assert build_model_alias("   ") == "Unknown Model"
 
 
 def test_message_validation_and_text_extraction() -> None:

@@ -68,7 +68,7 @@ class VLLMChatLLM(BaseChatLLM):
         """Load the configured vLLM model when possible."""
         inference_config = model_config.inference_config
         super().__init__(
-            model_id=model_config.model,
+            model_id=model_config.model_id,
             generation_config=ChatGenerationConfig(
                 max_tokens=inference_config.max_tokens if inference_config is not None else 256,
                 temperature=inference_config.temperature if inference_config is not None else 0.0,
