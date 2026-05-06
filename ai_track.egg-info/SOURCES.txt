@@ -1,4 +1,5 @@
 .gitignore
+LICENSE
 MANIFEST.in
 README.md
 pyproject.toml
@@ -24,6 +25,7 @@ tests/test_cuda_runtime.py
 tests/test_hub.py
 tests/test_inference_primitives.py
 tests/test_openai_compat.py
+tests/test_package_metadata.py
 tests/test_providers.py
 tests/test_public_api.py
 tests/test_runtime_helpers.py

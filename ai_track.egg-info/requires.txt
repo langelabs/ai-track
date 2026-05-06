@@ -17,6 +17,7 @@ diffusers>=0.30
 [macos]
 
 [macos:sys_platform == "darwin"]
+mlx>=0.24
 mlx-lm>=0.24
 mlx-vlm>=0.4
 mlx-audio>=0.4

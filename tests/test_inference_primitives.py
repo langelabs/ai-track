@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+import tomllib
 from types import SimpleNamespace
 
 import pytest
@@ -127,5 +128,115 @@ def test_mlx_embedding_fallback_error_is_actionable() -> None:
 
     model = MLXEmbeddingModel(model_id="test/embedding-model")
 
-    with pytest.raises(RuntimeError, match="Install the optional MLX dependencies.*backend='cuda'"):
+    with pytest.raises(RuntimeError, match="required MLX runtime packages are missing"):
         model._embed_from_hidden_states("hello")
+
+
+def test_mlx_embedding_uses_native_embed_method_when_available() -> None:
+    from track.inference.embedding.mlx import MLXEmbeddingModel, MLXEmbeddingRuntime
+
+    model = MLXEmbeddingModel.__new__(MLXEmbeddingModel)
+    model.runtime = MLXEmbeddingRuntime(load=lambda *_args, **_kwargs: (None, None))
+    model.model = SimpleNamespace(embed=lambda content: [1.5, 2.5] if isinstance(content, str) else [[1.0, 2.0], [3.0, 4.0]])
+    model.tokenizer = object()
+    model.load_error = None
+
+    assert model.embed("hello") == [1.5, 2.5]
+    assert model.embed(["hello", "world"]) == [[1.0, 2.0], [3.0, 4.0]]
+
+
+def test_mlx_embedding_falls_back_to_hidden_state_pooling() -> None:
+    from track.inference.embedding.mlx import MLXEmbeddingModel, MLXEmbeddingRuntime
+
+    class FakeArray:
+        def __init__(self, values: object) -> None:
+            self._values = values
+
+        def astype(self, _dtype: object) -> "FakeArray":
+            return self
+
+        def tolist(self) -> object:
+            return self._values
+
+    class FakeMx:
+        float32 = "float32"
+
+        @staticmethod
+        def array(values: object) -> FakeArray:
+            return FakeArray(values)
+
+    class FakeTokenizer:
+        pad_token_id = 0
+
+        def encode(self, text: str) -> list[int]:
+            mapping = {
+                "hi": [11, 12],
+                "hello": [21],
+            }
+            return mapping[text]
+
+    class FakeModel:
+        embed = None
+
+        def __call__(self, token_batch: FakeArray) -> SimpleNamespace:
+            batch_values = token_batch.tolist()
+            if batch_values == [[11, 12]]:
+                return SimpleNamespace(last_hidden_state=FakeArray([[[2.0, 4.0], [6.0, 8.0]]]))
+            return SimpleNamespace(last_hidden_state=FakeArray([
+                [[2.0, 4.0], [6.0, 8.0]],
+                [[10.0, 20.0], [100.0, 200.0]],
+            ]))
+
+    model = MLXEmbeddingModel.__new__(MLXEmbeddingModel)
+    model.runtime = MLXEmbeddingRuntime(
+        load=lambda *_args, **_kwargs: (None, None),
+        array=FakeMx.array,
+        to_float32=lambda arr: arr,
+        core=FakeMx,
+    )
+    model.model = FakeModel()
+    model.tokenizer = FakeTokenizer()
+    model.load_error = None
+
+    assert model.embed("hi") == [4.0, 6.0]
+    assert model.embed(["hi", "hello"]) == [[4.0, 6.0], [10.0, 20.0]]
+
+
+def test_mlx_embedding_reports_unsupported_output_shapes() -> None:
+    from track.inference.embedding.mlx import MLXEmbeddingModel, MLXEmbeddingRuntime
+
+    class FakeMx:
+        float32 = "float32"
+
+        @staticmethod
+        def array(values: object) -> object:
+            return values
+
+    class FakeModel:
+        embed = None
+
+        def __call__(self, _tokens: object) -> SimpleNamespace:
+            return SimpleNamespace()
+
+    model = MLXEmbeddingModel.__new__(MLXEmbeddingModel)
+    model.runtime = MLXEmbeddingRuntime(
+        load=lambda *_args, **_kwargs: (None, None),
+        array=FakeMx.array,
+        to_float32=lambda arr: arr,
+        core=FakeMx,
+    )
+    model.model = FakeModel()
+    model.tokenizer = SimpleNamespace(encode=lambda _text: [1], pad_token_id=0)
+    model.load_error = None
+
+    with pytest.raises(RuntimeError, match="does not expose embedding-compatible outputs"):
+        model.embed("hello")
+
+
+def test_macos_extra_includes_base_mlx_runtime() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    pyproject_data = tomllib.loads((project_root / "pyproject.toml").read_text())
+
+    macos_dependencies = pyproject_data["project"]["optional-dependencies"]["macos"]
+
+    assert any(dependency.startswith("mlx>=") for dependency in macos_dependencies)

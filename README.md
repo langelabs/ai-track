@@ -1,6 +1,6 @@
 [![CI](https://github.com/langelabs/ai-track/actions/workflows/ci.yml/badge.svg)](https://github.com/langelabs/ai-track/actions/workflows/ci.yml)
 
-![ai-track logo](assets/logo_light.png)
+![ai-track logo](https://raw.githubusercontent.com/langelabs/ai-track/main/assets/logo_light.png)
 
 `ai-track` is a universal AI runtime library for local and remote inference.
 It chooses the best available execution tier automatically, keeps the core
@@ -180,6 +180,14 @@ For `pip`:
 ```bash
 pip install "ai-track[macos]"
 ```
+
+The macOS extra installs the full MLX runtime stack used by local inference,
+including the base `mlx` package alongside `mlx-lm`, `mlx-vlm`, `mlx-audio`,
+and `mflux`.
+
+For embeddings, MLX checkpoints that expose a native `.embed()` method are
+used directly. Generic MLX checkpoints can also be used for embeddings through
+hidden-state fallback pooling when the full MLX stack is installed.
 
 ### CUDA extras
 

@@ -4,10 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-track"
-version = "0.1.5"
+version = "0.1.6"
 description = "Universal AI runtime for local and remote inference."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+]
 dependencies = [
   "openai>=1.0",
   "pydantic>=2.0",
@@ -17,8 +22,12 @@ dependencies = [
   "tqdm>=4.66",
 ]
 
+[project.urls]
+Source = "https://github.com/langelabs/ai-track"
+
 [project.optional-dependencies]
 macos = [
+  "mlx>=0.24; sys_platform == 'darwin'",
   "mlx-lm>=0.24; sys_platform == 'darwin'",
   "mlx-vlm>=0.4; sys_platform == 'darwin'",
   "mlx-audio>=0.4; sys_platform == 'darwin'",
@@ -39,6 +48,7 @@ dev = [
 
 [tool.setuptools]
 include-package-data = true
+license-files = ["LICENSE"]
 
 [tool.setuptools.packages.find]
 include = ["track*"]

@@ -16,6 +16,7 @@ class MLXEmbeddingRuntime:
     """Bundle the MLX embedding callables used by the backend."""
 
     load: Callable[..., tuple[Any, Any]]
+    core: Any | None = None
     array: Callable[..., Any] | None = None
     to_float32: Callable[..., Any] | None = None
 
@@ -28,6 +29,7 @@ def _load_mlx_embedding_runtime() -> MLXEmbeddingRuntime:
     except ModuleNotFoundError as exc:
         return MLXEmbeddingRuntime(
             load=build_missing_optional_dependency_loader("mlx_lm", exc),
+            core=None,
             array=None,
             to_float32=None,
         )
@@ -36,7 +38,7 @@ def _load_mlx_embedding_runtime() -> MLXEmbeddingRuntime:
         """Cast an MLX array to float32 for safe conversion."""
         return arr.astype(mx.float32)
 
-    return MLXEmbeddingRuntime(load=load, array=mx.array, to_float32=_to_float32)
+    return MLXEmbeddingRuntime(load=load, core=mx, array=mx.array, to_float32=_to_float32)
 
 
 class MLXEmbeddingModel(BaseEmbeddingModel):
@@ -79,10 +81,117 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
             return [[float(value) for value in row] for row in embeddings]
         return self._embed_from_hidden_states(content)
 
+    def _normalize_batch(self, content: str | list[str]) -> tuple[list[str], bool]:
+        """Return the input texts as a batch and remember whether input was singular."""
+        if isinstance(content, str):
+            return [content], True
+        return content, False
+
+    def _require_hidden_state_runtime(self) -> tuple[Any, Callable[..., Any], Callable[..., Any]]:
+        """Return the MLX helpers required for hidden-state fallback pooling."""
+        if self.runtime.core is None or self.runtime.array is None or self.runtime.to_float32 is None:
+            raise RuntimeError(
+                "MLX fallback embedding extraction is unavailable because required MLX runtime packages are missing. "
+                "Install the optional MLX dependencies for hidden-state extraction, or use backend='cuda' if available."
+            )
+        return self.runtime.core, self.runtime.array, self.runtime.to_float32
+
+    def _tokenize_batch(self, texts: list[str]) -> tuple[list[list[int]], list[list[int]]]:
+        """Encode texts and build a padding mask for mean pooling."""
+        if self.tokenizer is None:
+            raise RuntimeError("MLX embeddings are not available in the current environment.") from self.load_error
+        token_rows = [list(self.tokenizer.encode(text)) for text in texts]
+        if not token_rows:
+            return [], []
+        max_length = max(len(row) for row in token_rows)
+        pad_token_id = getattr(self.tokenizer, "pad_token_id", None)
+        if pad_token_id is None:
+            pad_token_id = getattr(self.tokenizer, "eos_token_id", 0)
+        padded_rows = [row + [pad_token_id] * (max_length - len(row)) for row in token_rows]
+        attention_mask = [[1] * len(row) + [0] * (max_length - len(row)) for row in token_rows]
+        return padded_rows, attention_mask
+
+    def _array_to_data(self, value: Any, to_float32: Callable[..., Any]) -> Any:
+        """Convert tensor-like values into Python-native nested lists when possible."""
+        normalized_value = to_float32(value) if hasattr(value, "astype") else value
+        return normalized_value.tolist() if hasattr(normalized_value, "tolist") else normalized_value
+
+    def _extract_embedding_rows(self, outputs: Any, attention_mask: list[list[int]], to_float32: Callable[..., Any]) -> list[list[float]]:
+        """Extract pooled embedding rows from one MLX model forward pass."""
+        last_hidden_state = getattr(outputs, "last_hidden_state", None)
+        if last_hidden_state is not None:
+            hidden_state_rows = self._array_to_data(last_hidden_state, to_float32)
+            return self._mean_pool_hidden_states(hidden_state_rows, attention_mask)
+        pooled_output = getattr(outputs, "pooler_output", None)
+        if pooled_output is not None:
+            pooled_rows = self._array_to_data(pooled_output, to_float32)
+            return self._coerce_embedding_rows(pooled_rows)
+        if isinstance(outputs, (tuple, list)) and outputs:
+            candidate = self._array_to_data(outputs[0], to_float32)
+            if self._is_sequence_hidden_states(candidate):
+                return self._mean_pool_hidden_states(candidate, attention_mask)
+            if self._is_embedding_rows(candidate):
+                return self._coerce_embedding_rows(candidate)
+        raise RuntimeError(
+            "MLX model loaded successfully but does not expose embedding-compatible outputs. "
+            "Expected hidden states or pooled embeddings from the model forward pass."
+        )
+
+    def _is_sequence_hidden_states(self, value: Any) -> bool:
+        """Return whether ``value`` looks like batched sequence hidden states."""
+        return (
+            isinstance(value, list)
+            and bool(value)
+            and isinstance(value[0], list)
+            and bool(value[0])
+            and isinstance(value[0][0], list)
+        )
+
+    def _is_embedding_rows(self, value: Any) -> bool:
+        """Return whether ``value`` looks like batched embedding rows."""
+        return isinstance(value, list) and bool(value) and isinstance(value[0], list) and (
+            not value[0] or not isinstance(value[0][0], list)
+        )
+
+    def _coerce_embedding_rows(self, rows: Any) -> list[list[float]]:
+        """Normalize pooled embedding rows into float lists."""
+        if not self._is_embedding_rows(rows):
+            raise RuntimeError(
+                "MLX model loaded successfully but returned pooled embeddings in an unsupported shape."
+            )
+        return [[float(value) for value in row] for row in rows]
+
+    def _mean_pool_hidden_states(
+        self,
+        hidden_states: Any,
+        attention_mask: list[list[int]],
+    ) -> list[list[float]]:
+        """Apply masked mean pooling to per-token hidden states."""
+        if not self._is_sequence_hidden_states(hidden_states):
+            raise RuntimeError("MLX model did not return hidden states in a supported shape.")
+        pooled_rows: list[list[float]] = []
+        for token_vectors, mask_row in zip(hidden_states, attention_mask, strict=False):
+            active_count = sum(mask_row)
+            if active_count <= 0:
+                raise RuntimeError("MLX embedding fallback received an empty token sequence.")
+            dimensions = len(token_vectors[0]) if token_vectors else 0
+            pooled_row = [0.0] * dimensions
+            for token_vector, include in zip(token_vectors, mask_row, strict=False):
+                if include == 0:
+                    continue
+                for index, value in enumerate(token_vector):
+                    pooled_row[index] += float(value)
+            pooled_rows.append([value / active_count for value in pooled_row])
+        return pooled_rows
+
     def _embed_from_hidden_states(self, content: str | list[str]) -> list[list[float]] | list[float]:
         """Tokenize content and mean-pool the model hidden states."""
-        _ = content
-        raise RuntimeError(
-            "MLX fallback embedding extraction is unavailable because required MLX runtime packages are missing. "
-            "Install the optional MLX dependencies for hidden-state extraction, or use backend='cuda' if available."
-        )
+        _mx, array, to_float32 = self._require_hidden_state_runtime()
+        self._ensure_ready()
+        texts, single_input = self._normalize_batch(content)
+        padded_rows, attention_mask = self._tokenize_batch(texts)
+        outputs = self.model(array(padded_rows))
+        embedding_rows = self._extract_embedding_rows(outputs, attention_mask, to_float32)
+        if single_input:
+            return embedding_rows[0]
+        return embedding_rows

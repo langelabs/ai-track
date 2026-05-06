@@ -40,7 +40,7 @@ wheels = [
 
 [[package]]
 name = "ai-track"
-version = "0.1.5"
+version = "0.1.6"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
@@ -62,6 +62,7 @@ cuda = [
 ]
 macos = [
     { name = "mflux", marker = "sys_platform == 'darwin'" },
+    { name = "mlx", marker = "sys_platform == 'darwin'" },
     { name = "mlx-audio", marker = "sys_platform == 'darwin'" },
     { name = "mlx-lm", marker = "sys_platform == 'darwin'" },
     { name = "mlx-vlm", marker = "sys_platform == 'darwin'" },
@@ -78,6 +79,7 @@ requires-dist = [
     { name = "diffusers", marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=0.30" },
     { name = "huggingface-hub", specifier = ">=0.24" },
     { name = "mflux", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.5" },
+    { name = "mlx", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.24" },
     { name = "mlx-audio", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.4" },
     { name = "mlx-lm", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.24" },
     { name = "mlx-vlm", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.4" },
