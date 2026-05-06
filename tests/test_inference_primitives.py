@@ -132,11 +132,20 @@ def test_mlx_embedding_fallback_error_is_actionable() -> None:
         model._embed_from_hidden_states("hello")
 
 
+def test_mlx_embedding_ready_error_includes_original_load_failure() -> None:
+    from track.inference.embedding.mlx import MLXEmbeddingModel
+
+    model = MLXEmbeddingModel(model_id="test/embedding-model")
+
+    with pytest.raises(RuntimeError, match="mlx"):
+        model.embed("hello")
+
+
 def test_mlx_embedding_uses_native_embed_method_when_available() -> None:
     from track.inference.embedding.mlx import MLXEmbeddingModel, MLXEmbeddingRuntime
 
     model = MLXEmbeddingModel.__new__(MLXEmbeddingModel)
-    model.runtime = MLXEmbeddingRuntime(load=lambda *_args, **_kwargs: (None, None))
+    model.runtime = MLXEmbeddingRuntime(load=lambda *_args, **_kwargs: (None, None), loader_name="test")
     model.model = SimpleNamespace(embed=lambda content: [1.5, 2.5] if isinstance(content, str) else [[1.0, 2.0], [3.0, 4.0]])
     model.tokenizer = object()
     model.load_error = None
@@ -190,6 +199,7 @@ def test_mlx_embedding_falls_back_to_hidden_state_pooling() -> None:
     model = MLXEmbeddingModel.__new__(MLXEmbeddingModel)
     model.runtime = MLXEmbeddingRuntime(
         load=lambda *_args, **_kwargs: (None, None),
+        loader_name="test",
         array=FakeMx.array,
         to_float32=lambda arr: arr,
         core=FakeMx,
@@ -200,6 +210,61 @@ def test_mlx_embedding_falls_back_to_hidden_state_pooling() -> None:
 
     assert model.embed("hi") == [4.0, 6.0]
     assert model.embed(["hi", "hello"]) == [[4.0, 6.0], [10.0, 20.0]]
+
+
+def test_mlx_embedding_reads_text_embeds_from_batch_tokenizer_output() -> None:
+    from track.inference.embedding.mlx import MLXEmbeddingModel, MLXEmbeddingRuntime
+
+    class FakeArray:
+        def __init__(self, values: object) -> None:
+            self._values = values
+
+        def astype(self, _dtype: object) -> "FakeArray":
+            return self
+
+        def tolist(self) -> object:
+            return self._values
+
+    class FakeMx:
+        float32 = "float32"
+
+        @staticmethod
+        def array(values: object) -> FakeArray:
+            return FakeArray(values)
+
+    class FakeTokenizer:
+        def __call__(self, texts: list[str], *, padding: bool, truncation: bool, return_tensors: str) -> dict[str, FakeArray]:
+            assert padding is True
+            assert truncation is True
+            assert return_tensors == "mlx"
+            return {
+                "input_ids": FakeArray([[101, 102], [201, 0]] if len(texts) == 2 else [[101, 102]]),
+                "attention_mask": FakeArray([[1, 1], [1, 0]] if len(texts) == 2 else [[1, 1]]),
+            }
+
+    class FakeModel:
+        embed = None
+
+        def __call__(self, input_ids: FakeArray, attention_mask: FakeArray) -> SimpleNamespace:
+            if input_ids.tolist() == [[101, 102]]:
+                return SimpleNamespace(text_embeds=FakeArray([[0.5, 1.5]]))
+            assert attention_mask.tolist() == [[1, 1], [1, 0]]
+            return SimpleNamespace(text_embeds=FakeArray([[0.5, 1.5], [2.5, 3.5]]))
+
+    model = MLXEmbeddingModel.__new__(MLXEmbeddingModel)
+    model.runtime = MLXEmbeddingRuntime(
+        load=lambda *_args, **_kwargs: (None, None),
+        loader_name="test",
+        array=FakeMx.array,
+        to_float32=lambda arr: arr,
+        core=FakeMx,
+    )
+    model.model = FakeModel()
+    model.tokenizer = FakeTokenizer()
+    model.load_error = None
+
+    assert model.embed("hi") == [0.5, 1.5]
+    assert model.embed(["hi", "hello"]) == [[0.5, 1.5], [2.5, 3.5]]
 
 
 def test_mlx_embedding_reports_unsupported_output_shapes() -> None:
@@ -221,6 +286,7 @@ def test_mlx_embedding_reports_unsupported_output_shapes() -> None:
     model = MLXEmbeddingModel.__new__(MLXEmbeddingModel)
     model.runtime = MLXEmbeddingRuntime(
         load=lambda *_args, **_kwargs: (None, None),
+        loader_name="test",
         array=FakeMx.array,
         to_float32=lambda arr: arr,
         core=FakeMx,
@@ -240,3 +306,4 @@ def test_macos_extra_includes_base_mlx_runtime() -> None:
     macos_dependencies = pyproject_data["project"]["optional-dependencies"]["macos"]
 
     assert any(dependency.startswith("mlx>=") for dependency in macos_dependencies)
+    assert any(dependency.startswith("mlx-embeddings>=") for dependency in macos_dependencies)

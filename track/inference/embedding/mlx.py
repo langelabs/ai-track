@@ -16,6 +16,7 @@ class MLXEmbeddingRuntime:
     """Bundle the MLX embedding callables used by the backend."""
 
     load: Callable[..., tuple[Any, Any]]
+    loader_name: str
     core: Any | None = None
     array: Callable[..., Any] | None = None
     to_float32: Callable[..., Any] | None = None
@@ -24,21 +25,56 @@ class MLXEmbeddingRuntime:
 def _load_mlx_embedding_runtime() -> MLXEmbeddingRuntime:
     """Import the MLX embedding runtime lazily so tests can patch it cleanly."""
     try:
-        from mlx_lm import load
         import mlx.core as mx
     except ModuleNotFoundError as exc:
         return MLXEmbeddingRuntime(
-            load=build_missing_optional_dependency_loader("mlx_lm", exc),
+            load=build_missing_optional_dependency_loader("mlx", exc),
+            loader_name="mlx",
             core=None,
             array=None,
             to_float32=None,
         )
 
+    try:
+        from mlx_embeddings import load
+    except ModuleNotFoundError:
+        try:
+            from mlx_lm import load
+        except ModuleNotFoundError as exc:
+            return MLXEmbeddingRuntime(
+                load=build_missing_optional_dependency_loader("mlx_embeddings or mlx_lm", exc),
+                loader_name="missing",
+                core=None,
+                array=None,
+                to_float32=None,
+            )
+        loader_name = "mlx_lm"
+    else:
+        loader_name = "mlx_embeddings"
+
     def _to_float32(arr: Any) -> Any:
         """Cast an MLX array to float32 for safe conversion."""
         return arr.astype(mx.float32)
 
-    return MLXEmbeddingRuntime(load=load, core=mx, array=mx.array, to_float32=_to_float32)
+    return MLXEmbeddingRuntime(
+        load=load,
+        loader_name=loader_name,
+        core=mx,
+        array=mx.array,
+        to_float32=_to_float32,
+    )
+
+
+def _to_embedding_rows(rows: Any) -> list[list[float]]:
+    """Normalize embedding rows into lists of floats."""
+    if not isinstance(rows, list):
+        raise RuntimeError("MLX model returned embeddings in an unsupported shape.")
+    normalized_rows: list[list[float]] = []
+    for row in rows:
+        if not isinstance(row, list):
+            raise RuntimeError("MLX model returned embeddings in an unsupported shape.")
+        normalized_rows.append([float(value) for value in row])
+    return normalized_rows
 
 
 class MLXEmbeddingModel(BaseEmbeddingModel):
@@ -68,7 +104,10 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
     def _ensure_ready(self) -> None:
         """Reject calls when the MLX runtime failed to load."""
         if self.model is None or self.tokenizer is None:
-            raise RuntimeError("MLX embeddings are not available in the current environment.") from self.load_error
+            message = "MLX embeddings are not available in the current environment."
+            if self.load_error is not None:
+                message = f"{message} Original load failure: {self.load_error}"
+            raise RuntimeError(message) from self.load_error
 
     def embed(self, content: str | list[str]) -> list[list[float]] | list[float]:
         """Generate embeddings with the MLX model."""
@@ -79,7 +118,7 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
             if isinstance(content, str):
                 return [float(value) for value in embeddings]
             return [[float(value) for value in row] for row in embeddings]
-        return self._embed_from_hidden_states(content)
+        return self._embed_from_model_outputs(content)
 
     def _normalize_batch(self, content: str | list[str]) -> tuple[list[str], bool]:
         """Return the input texts as a batch and remember whether input was singular."""
@@ -116,8 +155,35 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
         normalized_value = to_float32(value) if hasattr(value, "astype") else value
         return normalized_value.tolist() if hasattr(normalized_value, "tolist") else normalized_value
 
+    def _extract_batch_tokenizer_inputs(self, texts: list[str]) -> tuple[Any, Any, list[list[int]]]:
+        """Tokenize a batch with tokenizer call semantics used by ``mlx_embeddings``."""
+        if self.tokenizer is None or not callable(self.tokenizer):
+            raise RuntimeError("MLX embeddings are not available in the current environment.") from self.load_error
+        encoded_batch = self.tokenizer(texts, padding=True, truncation=True, return_tensors="mlx")
+        input_ids = encoded_batch["input_ids"]
+        attention_mask = encoded_batch.get("attention_mask")
+        if attention_mask is None:
+            raise RuntimeError("MLX tokenizer batch output did not include an attention mask.")
+        if self.runtime.to_float32 is None:
+            raise RuntimeError("MLX embeddings are not available in the current environment.") from self.load_error
+        attention_mask_rows = self._array_to_data(attention_mask, self.runtime.to_float32)
+        if not isinstance(attention_mask_rows, list):
+            raise RuntimeError("MLX tokenizer attention mask was returned in an unsupported shape.")
+        return input_ids, attention_mask, attention_mask_rows
+
+    def _call_model_for_embeddings(self, input_ids: Any, attention_mask: Any) -> Any:
+        """Run a model forward pass for embeddings with positional or keyword arguments."""
+        try:
+            return self.model(input_ids, attention_mask)
+        except TypeError:
+            return self.model(input_ids=input_ids, attention_mask=attention_mask)
+
     def _extract_embedding_rows(self, outputs: Any, attention_mask: list[list[int]], to_float32: Callable[..., Any]) -> list[list[float]]:
         """Extract pooled embedding rows from one MLX model forward pass."""
+        text_embeds = getattr(outputs, "text_embeds", None)
+        if text_embeds is not None:
+            embedding_rows = self._array_to_data(text_embeds, to_float32)
+            return self._coerce_embedding_rows(embedding_rows)
         last_hidden_state = getattr(outputs, "last_hidden_state", None)
         if last_hidden_state is not None:
             hidden_state_rows = self._array_to_data(last_hidden_state, to_float32)
@@ -159,7 +225,7 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
             raise RuntimeError(
                 "MLX model loaded successfully but returned pooled embeddings in an unsupported shape."
             )
-        return [[float(value) for value in row] for row in rows]
+        return _to_embedding_rows(rows)
 
     def _mean_pool_hidden_states(
         self,
@@ -184,14 +250,22 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
             pooled_rows.append([value / active_count for value in pooled_row])
         return pooled_rows
 
-    def _embed_from_hidden_states(self, content: str | list[str]) -> list[list[float]] | list[float]:
-        """Tokenize content and mean-pool the model hidden states."""
+    def _embed_from_model_outputs(self, content: str | list[str]) -> list[list[float]] | list[float]:
+        """Tokenize content and extract embedding rows from the model outputs."""
         _mx, array, to_float32 = self._require_hidden_state_runtime()
         self._ensure_ready()
         texts, single_input = self._normalize_batch(content)
-        padded_rows, attention_mask = self._tokenize_batch(texts)
-        outputs = self.model(array(padded_rows))
-        embedding_rows = self._extract_embedding_rows(outputs, attention_mask, to_float32)
+        if callable(self.tokenizer) and not hasattr(self.tokenizer, "encode"):
+            input_ids, attention_mask, attention_mask_rows = self._extract_batch_tokenizer_inputs(texts)
+            outputs = self._call_model_for_embeddings(input_ids, attention_mask)
+        else:
+            padded_rows, attention_mask_rows = self._tokenize_batch(texts)
+            outputs = self.model(array(padded_rows))
+        embedding_rows = self._extract_embedding_rows(outputs, attention_mask_rows, to_float32)
         if single_input:
             return embedding_rows[0]
         return embedding_rows
+
+    def _embed_from_hidden_states(self, content: str | list[str]) -> list[list[float]] | list[float]:
+        """Tokenize content and mean-pool the model hidden states."""
+        return self._embed_from_model_outputs(content)

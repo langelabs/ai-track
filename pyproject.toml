@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-track"
-version = "0.1.6"
+version = "0.1.7"
 description = "Universal AI runtime for local and remote inference."
 readme = "README.md"
 license = "MIT"
@@ -28,6 +28,7 @@ Source = "https://github.com/langelabs/ai-track"
 [project.optional-dependencies]
 macos = [
   "mlx>=0.24; sys_platform == 'darwin'",
+  "mlx-embeddings>=0.0.4; sys_platform == 'darwin'",
   "mlx-lm>=0.24; sys_platform == 'darwin'",
   "mlx-vlm>=0.4; sys_platform == 'darwin'",
   "mlx-audio>=0.4; sys_platform == 'darwin'",

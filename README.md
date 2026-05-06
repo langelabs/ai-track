@@ -182,12 +182,14 @@ pip install "ai-track[macos]"
 ```
 
 The macOS extra installs the full MLX runtime stack used by local inference,
-including the base `mlx` package alongside `mlx-lm`, `mlx-vlm`, `mlx-audio`,
-and `mflux`.
+including the base `mlx` package alongside `mlx-embeddings`, `mlx-lm`,
+`mlx-vlm`, `mlx-audio`, and `mflux`.
 
 For embeddings, MLX checkpoints that expose a native `.embed()` method are
-used directly. Generic MLX checkpoints can also be used for embeddings through
-hidden-state fallback pooling when the full MLX stack is installed.
+used directly. Embedding-focused MLX checkpoints that rely on the
+`mlx-embeddings` loader are also supported. Generic MLX checkpoints can be
+used for embeddings through hidden-state fallback pooling when the full MLX
+stack is installed.
 
 ### CUDA extras
 

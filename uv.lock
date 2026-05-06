@@ -40,7 +40,7 @@ wheels = [
 
 [[package]]
 name = "ai-track"
-version = "0.1.6"
+version = "0.1.7"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
@@ -64,6 +64,7 @@ macos = [
     { name = "mflux", marker = "sys_platform == 'darwin'" },
     { name = "mlx", marker = "sys_platform == 'darwin'" },
     { name = "mlx-audio", marker = "sys_platform == 'darwin'" },
+    { name = "mlx-embeddings", marker = "sys_platform == 'darwin'" },
     { name = "mlx-lm", marker = "sys_platform == 'darwin'" },
     { name = "mlx-vlm", marker = "sys_platform == 'darwin'" },
 ]
@@ -81,6 +82,7 @@ requires-dist = [
     { name = "mflux", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.5" },
     { name = "mlx", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.24" },
     { name = "mlx-audio", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.4" },
+    { name = "mlx-embeddings", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.0.4" },
     { name = "mlx-lm", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.24" },
     { name = "mlx-vlm", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.4" },
     { name = "numpy", specifier = ">=1.26" },
@@ -1897,6 +1899,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/95/db/a9f95e3794eca373d681220c8b9f8f84451a0d14959f85cc341ca592394c/mlx_audio-0.4.3.tar.gz", hash = "sha256:8e87badf56a0f73bf91e3797b1195c01440a181cf0b64a2a08dc1bda4b037f54", size = 1144947, upload-time = "2026-04-28T20:18:12.09Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e5/25/0a89073ed7b7cdf34299042bd03d867c12c0c8b43f597be61bea7f146793/mlx_audio-0.4.3-py3-none-any.whl", hash = "sha256:6b87bf42d79d9ceb6b9310a77656b9b76429c2d6ddd89f634b2786c58a2e4721", size = 1373582, upload-time = "2026-04-28T20:18:10.512Z" },
+]
+
+[[package]]
+name = "mlx-embeddings"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub", marker = "sys_platform == 'darwin'" },
+    { name = "mlx", marker = "sys_platform == 'darwin'" },
+    { name = "mlx-vlm", marker = "sys_platform == 'darwin'" },
+    { name = "transformers", extra = ["sentencepiece"], marker = "sys_platform == 'darwin'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4b/64/3d0e6a861ef2f59e28b6eeea144f7d2739a0b4f19caa2b45b3302b029725/mlx_embeddings-0.1.0.tar.gz", hash = "sha256:f80c1e1be26ff7bd22b15c1fba4cc03afd44c86e00a431b5fa75ffd7500affb1", size = 66007, upload-time = "2026-03-24T14:01:03.413Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/78/18/05a341c811c9ee04f227cdbc064a635b84202cb8f85471adfdeebe0da32d/mlx_embeddings-0.1.0-py2.py3-none-any.whl", hash = "sha256:3fe1feaa786d3b546ccd8909f6b4c22bd3bcce097616fce83173ededd30e6630", size = 74579, upload-time = "2026-03-24T14:01:02.235Z" },
 ]
 
 [[package]]
@@ -4165,6 +4182,12 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/4d/fe/7e84d20ac7d4d5d14bac2eab5976088d86342959fc2c0da54b4c2fc99856/transformers-5.7.0.tar.gz", hash = "sha256:a9d35cf39804e3456c1f9bc1a79ad5ffa878640a61f51f66f71c97f4b4e2ce10", size = 8401287, upload-time = "2026-04-28T18:30:09.75Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/60/86a9fe3037bec221094e2acb680219ad88b77006edba42fc0407a577ca93/transformers-5.7.0-py3-none-any.whl", hash = "sha256:869660cd8fc92badc041f5551bf755a42f4b9558c93341bf3fa3eeed7065079c", size = 10474236, upload-time = "2026-04-28T18:30:05.655Z" },
+]
+
+[package.optional-dependencies]
+sentencepiece = [
+    { name = "protobuf", version = "7.34.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "sentencepiece", marker = "sys_platform == 'darwin'" },
 ]
 
 [[package]]
