@@ -81,6 +81,8 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
 
     def _embed_from_hidden_states(self, content: str | list[str]) -> list[list[float]] | list[float]:
         """Tokenize content and mean-pool the model hidden states."""
+        _ = content
         raise RuntimeError(
-            "Fallback embedding extraction requires optional MLX runtime packages."
+            "MLX fallback embedding extraction is unavailable because required MLX runtime packages are missing. "
+            "Install the optional MLX dependencies for hidden-state extraction, or use backend='cuda' if available."
         )

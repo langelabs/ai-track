@@ -143,7 +143,12 @@ class LocalRuntime(SupportsOpenAICompatibility):
                     self.model_path,
                 )
             except Exception as exc:
-                logger.warning("Embedding backend could not be loaded: %s", exc)
+                logger.warning(
+                    "Embedding backend could not be loaded for model_id=%s backend=%s: %s",
+                    self.embedding_config.model_id,
+                    self.backend,
+                    exc,
+                )
                 self.embedding_model = None
 
     def _ensure_image_loaded(self) -> None:
@@ -221,7 +226,12 @@ class LocalRuntime(SupportsOpenAICompatibility):
                     self.model_path,
                 )
             except Exception as exc:
-                logger.warning("Chat backend could not be loaded: %s", exc)
+                logger.warning(
+                    "Chat backend could not be loaded for model_id=%s backend=%s: %s",
+                    self.chat_config.model_id,
+                    self.backend,
+                    exc,
+                )
                 self.chat_llm = None
 
     def load(self) -> None:

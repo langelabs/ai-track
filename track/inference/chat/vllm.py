@@ -70,10 +70,26 @@ class VLLMChatLLM(BaseChatLLM):
         super().__init__(
             model_id=model_config.model_id,
             generation_config=ChatGenerationConfig(
-                max_tokens=inference_config.max_tokens if inference_config is not None else 256,
-                temperature=inference_config.temperature if inference_config is not None else 0.0,
-                top_p=inference_config.top_p if inference_config is not None else 1.0,
-                verbose=inference_config.verbose if inference_config is not None else False,
+                max_tokens=(
+                    inference_config.max_tokens
+                    if inference_config is not None and inference_config.max_tokens is not None
+                    else 256
+                ),
+                temperature=(
+                    inference_config.temperature
+                    if inference_config is not None and inference_config.temperature is not None
+                    else 0.0
+                ),
+                top_p=(
+                    inference_config.top_p
+                    if inference_config is not None and inference_config.top_p is not None
+                    else 1.0
+                ),
+                verbose=(
+                    inference_config.verbose
+                    if inference_config is not None and inference_config.verbose is not None
+                    else False
+                ),
             ),
         )
         self.model_config = model_config

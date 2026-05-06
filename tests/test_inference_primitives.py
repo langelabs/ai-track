@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -80,3 +81,51 @@ def test_audio_and_message_helpers_are_available_from_utils() -> None:
     assert prepared.temp_path is not None
     prepared.cleanup()
     validate_mlx_messages([Message.user("hello")])
+
+
+def test_chat_backends_coalesce_nullable_inference_config_fields() -> None:
+    from track.contracts import AiModel, InferenceConfig
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+    from track.inference.chat.vllm import VLLMChatLLM, VLLMRuntime
+
+    model = AiModel(
+        provider="local",
+        model_id="test/chat-model",
+        alias="chat",
+        inference_config=InferenceConfig(
+            max_tokens=None,
+            temperature=None,
+            top_p=None,
+            verbose=None,
+        ),
+    )
+
+    mlx_runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (SimpleNamespace(), SimpleNamespace()),
+        generate=lambda *_args, **_kwargs: SimpleNamespace(text="ok"),
+        apply_chat_template=lambda **_kwargs: "prompt",
+    )
+    mlx_chat = MLXChatLLM(model_config=model, runtime=mlx_runtime)
+    assert mlx_chat.generation_config.max_tokens == 256
+    assert mlx_chat.generation_config.temperature == 0.0
+    assert mlx_chat.generation_config.top_p == 1.0
+    assert mlx_chat.generation_config.verbose is False
+
+    vllm_runtime = VLLMRuntime(
+        llm=lambda **_kwargs: SimpleNamespace(generate=lambda *_a, **_k: []),
+        sampling_params=lambda **kwargs: kwargs,
+    )
+    vllm_chat = VLLMChatLLM(model_config=model, runtime=vllm_runtime)
+    assert vllm_chat.generation_config.max_tokens == 256
+    assert vllm_chat.generation_config.temperature == 0.0
+    assert vllm_chat.generation_config.top_p == 1.0
+    assert vllm_chat.generation_config.verbose is False
+
+
+def test_mlx_embedding_fallback_error_is_actionable() -> None:
+    from track.inference.embedding.mlx import MLXEmbeddingModel
+
+    model = MLXEmbeddingModel(model_id="test/embedding-model")
+
+    with pytest.raises(RuntimeError, match="Install the optional MLX dependencies.*backend='cuda'"):
+        model._embed_from_hidden_states("hello")
