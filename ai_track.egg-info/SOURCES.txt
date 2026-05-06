@@ -18,6 +18,7 @@ ai_track.egg-info/dependency_links.txt
 ai_track.egg-info/requires.txt
 ai_track.egg-info/top_level.txt
 assets/logo_light.png
+tests/test_additional_coverage.py
 tests/test_cuda_factories.py
 tests/test_cuda_runtime.py
 tests/test_hub.py
@@ -25,6 +26,7 @@ tests/test_inference_primitives.py
 tests/test_openai_compat.py
 tests/test_providers.py
 tests/test_public_api.py
+tests/test_runtime_helpers.py
 track/__init__.py
 track/hub.py
 track/contracts/__init__.py
@@ -72,4 +74,5 @@ track/utils/chat.py
 track/utils/downloads.py
 track/utils/model_storage.py
 track/utils/openai.py
+track/utils/runtime.py
 track/utils/transcription.py
