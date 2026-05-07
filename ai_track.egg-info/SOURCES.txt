@@ -23,7 +23,9 @@ tests/test_additional_coverage.py
 tests/test_cuda_factories.py
 tests/test_cuda_runtime.py
 tests/test_hub.py
+tests/test_inference_hardening.py
 tests/test_inference_primitives.py
+tests/test_mflux_image_validation.py
 tests/test_openai_compat.py
 tests/test_package_metadata.py
 tests/test_providers.py
@@ -59,6 +61,7 @@ track/inference/embedding/mlx.py
 track/inference/embedding/models.py
 track/inference/embedding/transformers.py
 track/inference/image/__init__.py
+track/inference/image/_validation.py
 track/inference/image/diffusers.py
 track/inference/image/mflux.py
 track/inference/image/models.py
