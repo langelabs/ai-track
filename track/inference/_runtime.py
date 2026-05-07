@@ -41,6 +41,14 @@ from track.utils import (
 logger = logging.getLogger(__name__)
 
 
+def _is_capability_enabled(model: AiModel, *capability_names: str) -> bool:
+    """Return whether any named capability is enabled for the model."""
+    capabilities = model.capabilities
+    if capabilities is None:
+        return True
+    return any(bool(getattr(capabilities, capability_name)) for capability_name in capability_names)
+
+
 def detect_backend() -> Literal["cuda", "mlx"] | None:
     """Infer the preferred local backend from the current environment."""
     if sys.platform == "darwin":
@@ -71,11 +79,25 @@ class LocalRuntime(SupportsOpenAICompatibility):
         self.backend = backend if backend is not None else detect_backend()
         self.hf_token = hf_token
         self.model_path = Path(model_path) if model_path is not None else None
-        self.embedding_config: AiModel | None = model
-        self.chat_config: AiModel | None = model
-        self.image_generation_config: AiModel | None = model
-        self.audio_config = AudioModelConfig(model_id=model.model_id, alias=model.alias, default=True)
-        self.transcription_config = TranscriptionModelConfig(model_id=model.model_id, alias=model.alias, default=True)
+        self.embedding_config: AiModel | None = (
+            model if _is_capability_enabled(model, "embedding_input", "embedding_output") else None
+        )
+        self.chat_config: AiModel | None = (
+            model if _is_capability_enabled(model, "text_input", "text_output", "image_input", "audio_input") else None
+        )
+        self.image_generation_config: AiModel | None = (
+            model if _is_capability_enabled(model, "image_output") else None
+        )
+        self.audio_config = (
+            AudioModelConfig(model_id=model.model_id, alias=model.alias, default=True)
+            if _is_capability_enabled(model, "audio_output")
+            else None
+        )
+        self.transcription_config = (
+            TranscriptionModelConfig(model_id=model.model_id, alias=model.alias, default=True)
+            if _is_capability_enabled(model, "audio_input")
+            else None
+        )
         self.embedding_model: BaseEmbeddingModel | None = None
         self.image_model: BaseImageGenerationModel | None = None
         self.audio_model: BaseAudioModel | None = None
@@ -86,6 +108,19 @@ class LocalRuntime(SupportsOpenAICompatibility):
         self._download_progress: dict[str, float] = {}
         self._artifact_download_locks: defaultdict[str, Lock] = defaultdict(Lock)
         self._image_load_attempted = False
+        self._component_load_errors: dict[str, Exception] = {}
+
+    def _note_component_load_error(self, component_name: str, error: Exception | None) -> None:
+        """Record or clear one component initialization error."""
+        if error is None:
+            self._component_load_errors.pop(component_name, None)
+            return
+        self._component_load_errors[component_name] = error
+
+    def _loaded_component_error(self, component: object | None) -> Exception | None:
+        """Return the backend load error captured on an initialized component, if any."""
+        error = getattr(component, "load_error", None)
+        return error if isinstance(error, Exception) else None
 
     def _note_model_download_progress(self, model_id: str, value: float | None) -> None:
         """Record or clear live download percentage for one model id."""
@@ -142,6 +177,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
                     self.hf_token,
                     self.model_path,
                 )
+                self._note_component_load_error("embedding", self._loaded_component_error(self.embedding_model))
             except Exception as exc:
                 logger.warning(
                     "Embedding backend could not be loaded for model_id=%s backend=%s: %s",
@@ -150,6 +186,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
                     exc,
                 )
                 self.embedding_model = None
+                self._note_component_load_error("embedding", exc)
 
     def _ensure_image_loaded(self) -> None:
         """Resolve artifacts and construct the image backend when configured."""
@@ -168,9 +205,11 @@ class LocalRuntime(SupportsOpenAICompatibility):
                     self.hf_token,
                     self.model_path,
                 )
+                self._note_component_load_error("image", self._loaded_component_error(self.image_model))
             except Exception as exc:
                 logger.warning("Image backend could not be loaded: %s", exc)
                 self.image_model = None
+                self._note_component_load_error("image", exc)
 
     def _ensure_audio_loaded(self) -> None:
         """Resolve artifacts and construct the audio backend when configured."""
@@ -187,9 +226,11 @@ class LocalRuntime(SupportsOpenAICompatibility):
                     hf_token=self.hf_token,
                     model_path=self.model_path,
                 )
+                self._note_component_load_error("audio", self._loaded_component_error(self.audio_model))
             except Exception as exc:
                 logger.warning("Audio backend could not be loaded: %s", exc)
                 self.audio_model = None
+                self._note_component_load_error("audio", exc)
 
     def _ensure_transcription_loaded(self) -> None:
         """Resolve artifacts and construct the transcription backend when configured."""
@@ -206,9 +247,11 @@ class LocalRuntime(SupportsOpenAICompatibility):
                     hf_token=self.hf_token,
                     model_path=self.model_path,
                 )
+                self._note_component_load_error("transcription", self._loaded_component_error(self.transcription_model))
             except Exception as exc:
                 logger.warning("Transcription backend could not be loaded: %s", exc)
                 self.transcription_model = None
+                self._note_component_load_error("transcription", exc)
 
     def _ensure_chat_loaded(self) -> None:
         """Resolve artifacts and construct the chat backend when configured."""
@@ -225,6 +268,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
                     self.hf_token,
                     self.model_path,
                 )
+                self._note_component_load_error("chat", self._loaded_component_error(self.chat_llm))
             except Exception as exc:
                 logger.warning(
                     "Chat backend could not be loaded for model_id=%s backend=%s: %s",
@@ -233,6 +277,14 @@ class LocalRuntime(SupportsOpenAICompatibility):
                     exc,
                 )
                 self.chat_llm = None
+                self._note_component_load_error("chat", exc)
+
+    def _raise_if_required_components_failed(self) -> None:
+        """Raise the first initialization failure for configured components."""
+        for component_name in ("embedding", "image", "audio", "transcription", "chat"):
+            error = self._component_load_errors.get(component_name)
+            if error is not None:
+                raise error
 
     def load(self) -> None:
         """Download configured artifacts and initialize every backend once."""
@@ -242,6 +294,15 @@ class LocalRuntime(SupportsOpenAICompatibility):
         self._ensure_audio_loaded()
         self._ensure_transcription_loaded()
         self._ensure_chat_loaded()
+        self._raise_if_required_components_failed()
+
+    def _raise_component_error(self, component_name: str) -> None:
+        """Raise an actionable error for a component that failed during initialization."""
+        error = self._component_load_errors.get(component_name)
+        if error is not None:
+            raise RuntimeError(
+                f"The {component_name} backend failed to initialize: {error}"
+            ) from error
 
     def _create_image_backend(
         self,
@@ -270,6 +331,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
     def _require_embedding_model(self) -> BaseEmbeddingModel:
         """Return the embedding model or raise if embedding was not loaded."""
         self._ensure_embedding_loaded()
+        self._raise_component_error("embedding")
         if self.embedding_model is None:
             raise RuntimeError("The embedding model is not loaded.")
         return self.embedding_model
@@ -277,6 +339,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
     def _require_chat_llm(self) -> BaseChatLLM:
         """Return the chat backend or raise if chat was not loaded."""
         self._ensure_chat_loaded()
+        self._raise_component_error("chat")
         if self.chat_llm is None:
             raise RuntimeError("The chat backend is not loaded.")
         return self.chat_llm
@@ -284,6 +347,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
     def _require_transcription_model(self) -> BaseTranscriptionModel:
         """Return the transcription backend or raise if transcription was not loaded."""
         self._ensure_transcription_loaded()
+        self._raise_component_error("transcription")
         if self.transcription_model is None:
             raise RuntimeError("The transcription backend is not loaded.")
         return self.transcription_model
@@ -291,6 +355,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
     def _require_image_model(self) -> BaseImageGenerationModel:
         """Return the image model or raise if image generation was not loaded."""
         self._ensure_image_loaded()
+        self._raise_component_error("image")
         if self.image_model is None:
             raise RuntimeError("The image model is not loaded.")
         return self.image_model
@@ -298,6 +363,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
     def _require_audio_model(self) -> BaseAudioModel:
         """Return the audio model or raise if speech generation was not loaded."""
         self._ensure_audio_loaded()
+        self._raise_component_error("audio")
         if self.audio_model is None:
             raise RuntimeError("The audio model is not loaded.")
         return self.audio_model
@@ -320,18 +386,26 @@ class LocalRuntime(SupportsOpenAICompatibility):
         size: int = 512,
         steps: int = 4,
         callback: ImageGenerationCallback | None = None,
+        seed: int | None = None,
     ) -> object:
         """Generate an image from a text prompt."""
-        return self._require_image_model().generate_image(prompt=prompt, size=size, steps=steps, callback=callback)
+        return self._require_image_model().generate_image(
+            prompt=prompt,
+            size=size,
+            steps=steps,
+            callback=callback,
+            seed=seed,
+        )
 
     def stream_image(
         self,
         prompt: str,
         size: int = 512,
         steps: int = 4,
+        seed: int | None = None,
     ) -> Iterator[ImageGenerationEvent]:
         """Delegate image progress streaming to the selected image backend."""
-        return self._require_image_model().stream_image(prompt=prompt, size=size, steps=steps)
+        return self._require_image_model().stream_image(prompt=prompt, size=size, steps=steps, seed=seed)
 
     def generate_speech(
         self,

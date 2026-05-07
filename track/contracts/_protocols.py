@@ -34,13 +34,20 @@ class SupportsOpenAICompatibility(Protocol):
         size: int = 512,
         steps: int = 4,
         callback: Any | None = None,
+        seed: int | None = None,
     ) -> object:
         """Generate one image for a text prompt."""
 
     def stream_chat(self, messages: list[Message]) -> Iterator[str]:
         """Yield text chunks for a chat response."""
 
-    def stream_image(self, prompt: str, size: int = 512, steps: int = 4) -> Iterator[ImageGenerationEvent]:
+    def stream_image(
+        self,
+        prompt: str,
+        size: int = 512,
+        steps: int = 4,
+        seed: int | None = None,
+    ) -> Iterator[ImageGenerationEvent]:
         """Yield image generation events for a prompt."""
 
     def generate_speech(

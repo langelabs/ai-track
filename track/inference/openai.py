@@ -22,6 +22,7 @@ from track.contracts import (
     TextContentPart,
     TranscriptionResult,
 )
+from track.utils import normalize_audio_response_format as validate_audio_response_format
 
 
 def _estimate_text_tokens(text: str) -> int:
@@ -523,9 +524,14 @@ def _normalize_size(size: Any) -> Literal["1024x1024", "1024x1536", "1536x1024",
 
 def _backend_image_size(size: Any) -> int:
     """Translate an OpenAI image size into the integer backend size."""
-    if isinstance(size, int) and size > 0:
+    if size is None:
+        return 1024
+    if isinstance(size, int) and size == 1024:
         return size
     if isinstance(size, str):
+        normalized_size = size.strip().lower()
+        if normalized_size in {"auto", "1024", "1024x1024"}:
+            return 1024
         if "x" in size:
             try:
                 return int(size.split("x", 1)[0])
@@ -536,6 +542,31 @@ def _backend_image_size(size: Any) -> int:
         except ValueError:
             return 512
     return 512
+
+
+def _validate_image_request_n(n: int | None) -> None:
+    """Reject image counts that the local compatibility layer cannot honor."""
+    if n is None or n == 1:
+        return
+    raise ValueError("The local OpenAI-compatible image client supports only n=1.")
+
+
+def _validate_image_request_size(size: str | int | None) -> None:
+    """Reject image sizes that the local compatibility layer cannot honor faithfully."""
+    if size is None:
+        return
+    if isinstance(size, int):
+        if size == 1024:
+            return
+        raise ValueError("The local OpenAI-compatible image client supports only square image sizes of 1024x1024.")
+    normalized_size = size.strip().lower()
+    if normalized_size in {"auto", "1024", "1024x1024"}:
+        return
+    if "x" in normalized_size:
+        width, _, height = normalized_size.partition("x")
+        if width != height:
+            raise ValueError("The local OpenAI-compatible image client supports only square image sizes.")
+    raise ValueError("The local OpenAI-compatible image client supports only square image sizes of 1024x1024.")
 
 
 def _normalize_response_background(background: Any) -> Literal["transparent", "opaque"]:
@@ -637,12 +668,7 @@ def _build_completed_image_event(
 
 def _normalize_audio_response_format(response_format: Any) -> str:
     """Normalize one local audio response format value."""
-    if response_format is None:
-        return "wav"
-    normalized_response_format = str(response_format).strip().lower()
-    if normalized_response_format in {"wav", "audio/wav", "pcm"}:
-        return "wav"
-    return "wav"
+    return validate_audio_response_format(None if response_format is None else str(response_format))
 
 
 @dataclass
@@ -732,6 +758,8 @@ class _ImagesResource:
         _ = (model, moderation, n, output_compression, partial_images, response_format, style, user)
         if self.local_ai is None:
             raise RuntimeError("No local AI backend is bound to this client.")
+        _validate_image_request_n(n)
+        _validate_image_request_size(size)
         if stream:
             return self._stream_image(
                 prompt=prompt,

@@ -47,6 +47,7 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         size: int = 512,
         steps: int = 4,
         callback: ImageGenerationCallback | None = None,
+        seed: int | None = None,
     ) -> object:
         """Generate an image with the diffusers pipeline."""
         if self.pipeline is None:
@@ -71,6 +72,7 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
             size=size,
             steps=steps,
             callback_on_step_end=callback_on_step_end,
+            seed=seed,
         )
         return result.images[0]
 
@@ -79,6 +81,7 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         prompt: str,
         size: int = 512,
         steps: int = 4,
+        seed: int | None = None,
     ) -> Iterator[ImageGenerationEvent]:
         """Yield intermediate and final images while the pipeline runs."""
         if self.pipeline is None:
@@ -103,6 +106,7 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
                     size=size,
                     steps=steps,
                     callback_on_step_end=callback_on_step_end,
+                    seed=seed,
                 )
                 event_queue.put(ImageGenerationEvent(image=result.images[0], step=steps - 1, kind="final"))
             except BaseException as exc:  # pragma: no cover - defensive propagation
@@ -128,6 +132,7 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         size: int,
         steps: int,
         callback_on_step_end: Any | None = None,
+        seed: int | None = None,
     ) -> Any:
         """Execute the underlying pipeline with the shared generation settings."""
         if self.pipeline is None:
@@ -136,13 +141,16 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
             import torch  # type: ignore[import-not-found]
         except ModuleNotFoundError as exc:
             raise RuntimeError("torch is not installed.") from exc
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=self.device).manual_seed(seed)
         return self.pipeline(
             prompt=prompt,
             height=size,
             width=size,
             guidance_scale=1.0,
             num_inference_steps=steps,
-            generator=torch.Generator(device=self.device).manual_seed(0),
+            generator=generator,
             callback_on_step_end=callback_on_step_end,
         )
 

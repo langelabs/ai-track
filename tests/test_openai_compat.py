@@ -4,6 +4,8 @@ import base64
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_client_exposes_expected_resources() -> None:
     from track.inference.openai import Client
@@ -57,3 +59,45 @@ def test_stream_chunks_include_start_and_stop_markers() -> None:
     assert len(chunks) >= 3
     assert chunks[0].choices[0].delta.role == "assistant"
     assert chunks[-1].choices[0].finish_reason == "stop"
+
+
+def test_speech_resource_rejects_unsupported_response_format() -> None:
+    """Speech compatibility should reject response formats that local backends do not support."""
+    from track.inference.openai import Client
+
+    local_ai = SimpleNamespace(
+        generate_speech=lambda **_: SimpleNamespace(
+            audio=b"wav",
+            audio_format="wav",
+            mime_type="audio/wav",
+            sample_rate=24000,
+            voice="casual_male",
+            duration_seconds=1.0,
+        )
+    )
+    client = Client(local_ai=local_ai)
+
+    with pytest.raises(ValueError, match="Unsupported audio response format"):
+        client.audio.speech.create(model="audio", input="hello", response_format="flac")
+
+
+def test_image_resource_rejects_multiple_images_request() -> None:
+    """Image compatibility should reject OpenAI parameters that the local runtime cannot honor."""
+    from track.inference.openai import Client
+
+    local_ai = SimpleNamespace(generate_image=lambda **_: object(), stream_image=lambda **_: iter(()))
+    client = Client(local_ai=local_ai)
+
+    with pytest.raises(ValueError, match="supports only n=1"):
+        client.images.generate(model="image", prompt="test", n=2)
+
+
+def test_image_resource_rejects_rectangular_sizes() -> None:
+    """Image compatibility should reject rectangular size metadata it cannot generate faithfully."""
+    from track.inference.openai import Client
+
+    local_ai = SimpleNamespace(generate_image=lambda **_: object(), stream_image=lambda **_: iter(()))
+    client = Client(local_ai=local_ai)
+
+    with pytest.raises(ValueError, match="supports only square image sizes"):
+        client.images.generate(model="image", prompt="test", size="1024x1536")

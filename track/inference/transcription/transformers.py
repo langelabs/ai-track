@@ -82,7 +82,9 @@ class TransformersTranscriptionModel(BaseTranscriptionModel):
             return text
         if isinstance(result, list) and result:
             return self._extract_text(result[0])
-        return str(result)
+        raise RuntimeError(
+            f"The transformers transcription pipeline returned an unsupported response payload: {type(result).__name__}."
+        )
 
     def transcribe(
         self,

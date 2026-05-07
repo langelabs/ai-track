@@ -120,7 +120,9 @@ class VLLMChatLLM(BaseChatLLM):
             model=resolve_model_location(self.model_id, self.model_path, self.hf_token),
             dtype=dtype,
             download_dir=str(self.model_path) if self.model_path is not None else None,
-            trust_remote_code=True,
+            trust_remote_code=bool(
+                self.model_config.inference_config is not None and self.model_config.inference_config.trust_remote_code
+            ),
         )
 
     def _ensure_ready(self) -> None:
@@ -153,7 +155,9 @@ class VLLMChatLLM(BaseChatLLM):
             return text
         if isinstance(result, list) and result:
             return self._extract_text(result[0])
-        return str(result)
+        raise RuntimeError(
+            f"vLLM returned an unsupported response payload: {type(result).__name__}."
+        )
 
     def chat(self, messages: list[Message]) -> Message:
         """Generate an assistant response from validated chat messages."""

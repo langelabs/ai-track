@@ -11,6 +11,16 @@ from typing import Any
 from track.contracts import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
 from track.utils import resolve_model_location
 
+from ._validation import ImageGenerationOutputError, validate_generated_image
+
+__all__ = [
+    "ImageGenerationOutputError",
+    "MfluxImageGenerationModel",
+    "MfluxRuntime",
+    "normalize_mflux_model_id",
+    "resolve_model_config",
+]
+
 
 @dataclass(frozen=True, slots=True)
 class MfluxRuntime:
@@ -87,24 +97,28 @@ class MfluxImageGenerationModel(BaseImageGenerationModel):
         size: int = 512,
         steps: int = 4,
         callback: ImageGenerationCallback | None = None,
+        seed: int | None = None,
     ) -> object:
         """Generate an image with the MFLUX FLUX.2 model."""
-        generated = self._generate(prompt=prompt, size=size, steps=steps)
+        generated = self._generate(prompt=prompt, size=size, steps=steps, seed=seed)
+        image = self._validate_generation_output(generated)
         if callback is not None:
-            callback(steps, steps, generated.image)
-        return generated.image
+            callback(steps, steps, image)
+        return image
 
     def stream_image(
         self,
         prompt: str,
         size: int = 512,
         steps: int = 4,
+        seed: int | None = None,
     ) -> Iterator[ImageGenerationEvent]:
         """Yield the final image for a prompt."""
-        generated = self._generate(prompt=prompt, size=size, steps=steps)
-        yield ImageGenerationEvent(image=generated.image, step=steps - 1, kind="final")
+        generated = self._generate(prompt=prompt, size=size, steps=steps, seed=seed)
+        image = self._validate_generation_output(generated)
+        yield ImageGenerationEvent(image=image, step=steps - 1, kind="final")
 
-    def _generate(self, prompt: str, size: int, steps: int) -> Any:
+    def _generate(self, prompt: str, size: int, steps: int, seed: int | None = None) -> Any:
         """Invoke the underlying MFLUX model with the configured parameters."""
         if self.load_error is not None:
             raise RuntimeError("MFLUX is not available in the current environment.") from self.load_error
@@ -113,12 +127,19 @@ class MfluxImageGenerationModel(BaseImageGenerationModel):
             generation_lock = threading.Lock()
             self._generation_lock = generation_lock
         with generation_lock:
-            generated = self.model.generate_image(
-                seed=0,
-                prompt=prompt,
-                num_inference_steps=steps,
-                width=size,
-                height=size,
-                guidance=1.0,
-            )
+            generation_kwargs: dict[str, Any] = {
+                "prompt": prompt,
+                "num_inference_steps": steps,
+                "width": size,
+                "height": size,
+                "guidance": 1.0,
+            }
+            if seed is not None:
+                generation_kwargs["seed"] = seed
+            generated = self.model.generate_image(**generation_kwargs)
         return generated
+
+    def _validate_generation_output(self, generated: Any) -> object:
+        """Validate the generated image payload before returning a success result."""
+        image = getattr(generated, "image", None)
+        return validate_generated_image(image)

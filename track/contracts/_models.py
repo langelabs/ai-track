@@ -14,6 +14,7 @@ class InferenceConfig(BaseModel):
     top_p: float | None = None
     quantize: int | None = None
     verbose: bool | None = None
+    trust_remote_code: bool | None = None
 
 
 class AiModelCapabilities(BaseModel):

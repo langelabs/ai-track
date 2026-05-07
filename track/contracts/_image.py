@@ -34,6 +34,7 @@ class BaseImageGenerationModel(ABC):
         size: int = 512,
         steps: int = 4,
         callback: ImageGenerationCallback | None = None,
+        seed: int | None = None,
     ) -> object:
         """Generate an image from a text prompt."""
 
@@ -43,5 +44,6 @@ class BaseImageGenerationModel(ABC):
         prompt: str,
         size: int = 512,
         steps: int = 4,
+        seed: int | None = None,
     ) -> Iterator[ImageGenerationEvent]:
         """Yield intermediate and final images for a prompt."""
