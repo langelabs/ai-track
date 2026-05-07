@@ -15,7 +15,7 @@ from .chat import (
     validate_mlx_messages,
 )
 from .downloads import configured_local_model_ids, download_configured_models, download_local_model_artifact
-from .model_storage import is_model_artifact_cached, resolve_model_location
+from .model_storage import get_model_artifact_size, is_model_artifact_cached, resolve_model_location
 from .runtime import build_missing_optional_dependency_loader, configure_hugging_face_access
 from .transcription import PreparedAudioInput, prepare_audio_input
 
@@ -33,6 +33,7 @@ __all__ = [
     "extract_message_audio_paths",
     "extract_message_image_paths",
     "get_compute_device",
+    "get_model_artifact_size",
     "is_model_artifact_cached",
     "normalize_audio_response_format",
     "parse_audio_duration",

@@ -9,6 +9,7 @@ from track.contracts import AiModel
 from track.exceptions import ModelNotDownloaded, ModelNotLoaded
 from track.inference.openai import AsyncClient, Client
 from track.inference._runtime import LocalRuntime
+from track.utils import get_model_artifact_size
 
 from .__base import AiProvider
 
@@ -33,6 +34,16 @@ class LocalProvider(AiProvider):
             hf_token=hf_token,
             model_path=model_path,
         )
+
+    @property
+    def model_size(self) -> int:
+        """Return the local artifact size in bytes for the configured model."""
+        return get_model_artifact_size(self.model.model_id, self._runtime.model_path)
+
+    @property
+    def runtime(self) -> Literal["mlx", "cuda"] | None:
+        """Return the active local backend when one is configured or detected."""
+        return self._runtime.backend
 
     def _require_downloaded(self) -> None:
         """Raise when the local artifacts are not available yet."""

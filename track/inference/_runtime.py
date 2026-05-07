@@ -12,6 +12,7 @@ from typing import Literal
 
 from track.contracts import (
     AiModel,
+    AiModelCapabilities,
     AudioGenerationResult,
     BaseAudioModel,
     BaseChatLLM,
@@ -47,6 +48,25 @@ def _is_capability_enabled(model: AiModel, *capability_names: str) -> bool:
     if capabilities is None:
         return True
     return any(bool(getattr(capabilities, capability_name)) for capability_name in capability_names)
+
+
+def _declared_required_components(capabilities: AiModelCapabilities | None) -> set[str]:
+    """Return the explicitly declared backend components that should load eagerly."""
+    if capabilities is None:
+        return set()
+
+    required_components: set[str] = set()
+    if capabilities.embedding_input or capabilities.embedding_output:
+        required_components.add("embedding")
+    if capabilities.text_input or capabilities.text_output or capabilities.image_input or capabilities.audio_input:
+        required_components.add("chat")
+    if capabilities.image_output:
+        required_components.add("image")
+    if capabilities.audio_output:
+        required_components.add("audio")
+    if capabilities.audio_input:
+        required_components.add("transcription")
+    return required_components
 
 
 def detect_backend() -> Literal["cuda", "mlx"] | None:
@@ -109,6 +129,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
         self._artifact_download_locks: defaultdict[str, Lock] = defaultdict(Lock)
         self._image_load_attempted = False
         self._component_load_errors: dict[str, Exception] = {}
+        self._required_components = _declared_required_components(model.capabilities)
 
     def _note_component_load_error(self, component_name: str, error: Exception | None) -> None:
         """Record or clear one component initialization error."""
@@ -287,13 +308,18 @@ class LocalRuntime(SupportsOpenAICompatibility):
                 raise error
 
     def load(self) -> None:
-        """Download configured artifacts and initialize every backend once."""
+        """Download configured artifacts and eagerly initialize only explicitly declared backends."""
         self.download()
-        self._ensure_embedding_loaded()
-        self._ensure_image_loaded()
-        self._ensure_audio_loaded()
-        self._ensure_transcription_loaded()
-        self._ensure_chat_loaded()
+        if "embedding" in self._required_components:
+            self._ensure_embedding_loaded()
+        if "image" in self._required_components:
+            self._ensure_image_loaded()
+        if "audio" in self._required_components:
+            self._ensure_audio_loaded()
+        if "transcription" in self._required_components:
+            self._ensure_transcription_loaded()
+        if "chat" in self._required_components:
+            self._ensure_chat_loaded()
         self._raise_if_required_components_failed()
 
     def _raise_component_error(self, component_name: str) -> None:

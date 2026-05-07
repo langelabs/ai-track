@@ -54,6 +54,21 @@ def _load_mlx_runtime() -> MLXRuntime:
     )
 
 
+def _wrap_mlx_load_error(model_id: str, error: Exception) -> RuntimeError:
+    """Return a more actionable error for known MLX chat initialization failures."""
+    message = str(error)
+    if "not supported" in message and "mlx_vlm.models." in message:
+        return RuntimeError(
+            "MLX chat failed to initialize for "
+            f"model '{model_id}': this model architecture is not supported by the installed "
+            "mlx_vlm chat backend. If you are using this model for embeddings, register it with "
+            "embedding-only registration via AiModelCapabilities(embedding_input=True, "
+            "embedding_output=True). Otherwise, switch to a chat model supported by mlx_vlm or "
+            "use another backend."
+        )
+    return RuntimeError(f"MLX chat failed to initialize for model '{model_id}': {message}")
+
+
 class MLXChatLLM(BaseChatLLM):
     """Implement chat generation through the MLX-VLM Python API."""
 
@@ -105,14 +120,14 @@ class MLXChatLLM(BaseChatLLM):
             location = resolve_model_location(self.model_id, self.model_path, self.hf_token)
             self.model, self.processor = self.runtime.load(location)
         except Exception as exc:  # pragma: no cover - optional runtime path
-            self.load_error = exc
+            self.load_error = _wrap_mlx_load_error(self.model_id, exc)
 
     def _ensure_ready(self) -> None:
         """Reject calls when the MLX runtime failed to load."""
         if self.model is None or self.processor is None:
-            raise RuntimeError(
-                "MLX chat is not available in the current environment."
-            ) from self.load_error
+            if self.load_error is not None:
+                raise self.load_error
+            raise RuntimeError("MLX chat is not available in the current environment.")
 
     def chat(self, messages: list[Message]) -> Message:
         """Generate an assistant response from validated chat messages."""

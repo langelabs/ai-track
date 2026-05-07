@@ -53,6 +53,21 @@ def _render_vllm_prompt(messages: list[Message]) -> str:
     return "\n".join(prompt_lines)
 
 
+def _wrap_vllm_load_error(model_id: str, error: Exception) -> RuntimeError:
+    """Return a more actionable error for known vLLM backend initialization failures."""
+    message = str(error)
+    if "flashinfer-cubin version" in message and "flashinfer version" in message:
+        return RuntimeError(
+            "vLLM chat failed to initialize for "
+            f"model '{model_id}' on backend 'cuda': install matching flashinfer and "
+            "flashinfer-cubin versions. You can set FLASHINFER_DISABLE_VERSION_CHECK=1 "
+            "temporarily for diagnosis, but it is not the recommended fix."
+        )
+    return RuntimeError(
+        f"vLLM chat failed to initialize for model '{model_id}' on backend 'cuda': {message}"
+    )
+
+
 class VLLMChatLLM(BaseChatLLM):
     """Implement chat generation through the vLLM Python API."""
 
@@ -102,7 +117,7 @@ class VLLMChatLLM(BaseChatLLM):
             configure_hugging_face_access(self.hf_token)
             self.model = self._build_model()
         except Exception as exc:  # pragma: no cover - optional runtime path
-            self.load_error = exc
+            self.load_error = _wrap_vllm_load_error(self.model_id, exc)
 
     def _build_model(self) -> Any:
         """Construct the vLLM engine with the configured model location."""
@@ -128,7 +143,9 @@ class VLLMChatLLM(BaseChatLLM):
     def _ensure_ready(self) -> None:
         """Reject calls when the vLLM runtime failed to load."""
         if self.model is None:
-            raise RuntimeError("vLLM chat is not available in the current environment.") from self.load_error
+            if self.load_error is not None:
+                raise self.load_error
+            raise RuntimeError("vLLM chat is not available in the current environment.")
 
     def _build_prompt(self, messages: list[Message]) -> str:
         """Render chat messages into the prompt format used by vLLM."""

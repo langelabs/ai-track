@@ -185,11 +185,33 @@ The macOS extra installs the full MLX runtime stack used by local inference,
 including the base `mlx` package alongside `mlx-embeddings`, `mlx-lm`,
 `mlx-vlm`, `mlx-audio`, and `mflux`.
 
+MLX chat support is limited to model architectures that the installed
+`mlx_vlm` package can actually load. If `mlx_vlm` does not support a model's
+chat architecture, register that model only for the modalities you intend to
+use instead of advertising generic text/chat support.
+
 For embeddings, MLX checkpoints that expose a native `.embed()` method are
 used directly. Embedding-focused MLX checkpoints that rely on the
 `mlx-embeddings` loader are also supported. Generic MLX checkpoints can be
 used for embeddings through hidden-state fallback pooling when the full MLX
 stack is installed.
+
+For local embedding-only models, declare explicit capabilities so downstream
+apps do not boot the MLX chat backend unnecessarily:
+
+```python
+from track.contracts import AiModel, AiModelCapabilities
+
+embedding_model = AiModel(
+    provider="local",
+    model_id="your-org/your-embedding-model",
+    alias="embedding-model",
+    capabilities=AiModelCapabilities(
+        embedding_input=True,
+        embedding_output=True,
+    ),
+)
+```
 
 ### CUDA extras
 
@@ -205,6 +227,28 @@ pip install "ai-track[cuda]"
 
 The CUDA extra brings in the GPU-oriented runtime stack, including vLLM,
 Transformers, Diffusers, and PyTorch-based helpers.
+
+`ai-track` validates CUDA support against the pinned `vllm` 0.20.x minor line.
+Future `vllm` releases are not treated as automatically compatible just because
+they satisfy an open-ended lower bound.
+
+For local embedding-only models, declare explicit capabilities so downstream
+apps do not register unrelated modalities and accidentally boot unused CUDA
+backends:
+
+```python
+from track.contracts import AiModel, AiModelCapabilities
+
+embedding_model = AiModel(
+    provider="local",
+    model_id="Qwen/Qwen3-Embedding-0.6B",
+    alias="qwen-embedding",
+    capabilities=AiModelCapabilities(
+        embedding_input=True,
+        embedding_output=True,
+    ),
+)
+```
 
 ## Testing
 

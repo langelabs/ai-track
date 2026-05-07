@@ -9,7 +9,7 @@ tqdm>=4.66
 
 [cuda:sys_platform == "linux"]
 torch>=2.2
-vllm>=0.11
+vllm<0.21,>=0.20
 transformers>=4.45
 accelerate>=1.0
 diffusers>=0.30

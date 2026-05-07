@@ -43,6 +43,53 @@ def test_vllm_chat_disables_trust_remote_code_by_default() -> None:
     assert captured["trust_remote_code"] is False
 
 
+def test_vllm_chat_surfaces_actionable_flashinfer_version_mismatch() -> None:
+    """vLLM load failures should explain how to repair FlashInfer version mismatches."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.vllm import VLLMChatLLM, VLLMRuntime
+
+    runtime = VLLMRuntime(
+        llm=lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "flashinfer-cubin version (0.0.0) does not match flashinfer version (0.6.6)."
+            )
+        ),
+        sampling_params=lambda **kwargs: kwargs,
+    )
+    model = AiModel(provider="local", model_id="test/chat", alias="chat")
+    chat = VLLMChatLLM(model_config=model, runtime=runtime)
+
+    with pytest.raises(
+        RuntimeError,
+        match="install matching flashinfer and flashinfer-cubin versions",
+    ):
+        chat.chat([Message.user("hello")])
+
+
+def test_mlx_chat_surfaces_actionable_unsupported_model_error() -> None:
+    """MLX chat load failures should explain unsupported mlx_vlm model architectures."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError(
+                "Model type gemma3_text not supported. Error: No module named 'mlx_vlm.models.gemma3_text'"
+            )
+        ),
+        generate=lambda *_args, **_kwargs: SimpleNamespace(text="unused"),
+        apply_chat_template=lambda **kwargs: kwargs.get("prompt"),
+    )
+    model = AiModel(provider="local", model_id="test/gemma3", alias="gemma3")
+    chat = MLXChatLLM(model_config=model, runtime=runtime)
+
+    with pytest.raises(
+        RuntimeError,
+        match="embedding-only registration",
+    ):
+        chat.chat([Message.user("hello")])
+
+
 def test_transcription_rejects_unexpected_backend_payloads() -> None:
     """Transcription should raise instead of stringifying unsupported backend payloads."""
     from track.inference.transcription.transformers import TransformersTranscriptionModel

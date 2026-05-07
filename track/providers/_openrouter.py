@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from openai import AsyncClient, Client
 
 from track.contracts import AiModel
@@ -31,6 +33,16 @@ class OpenRouterProvider(AiProvider):
         self.base_url = "https://openrouter.ai/api/v1"
         self.loaded = True
         self.downloaded = True
+
+    @property
+    def model_size(self) -> int:
+        """Return ``0`` because remote providers do not expose local artifacts."""
+        return 0
+
+    @property
+    def runtime(self) -> Literal["cloud"]:
+        """Return ``cloud`` because OpenRouter runs on a remote provider."""
+        return "cloud"
 
     def get_client(self) -> Client:
         """Return a sync OpenAI client for the configured remote model."""

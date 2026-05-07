@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Literal
 
 from openai import AsyncClient, Client
 
@@ -19,6 +20,16 @@ class AiProvider(ABC):
 
         self.loaded: bool = False
         self.downloaded: bool = False
+
+    @property
+    @abstractmethod
+    def model_size(self) -> int:
+        """Return the model artifact size in bytes for the configured provider."""
+
+    @property
+    @abstractmethod
+    def runtime(self) -> Literal["cloud", "mlx", "cuda"] | None:
+        """Return the execution runtime backing the configured provider."""
 
     @abstractmethod
     def get_client(self) -> Client:
