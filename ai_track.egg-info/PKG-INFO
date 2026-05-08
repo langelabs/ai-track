@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: ai-track
-Version: 0.1.9
+Version: 0.1.10
 Summary: Universal AI runtime for local and remote inference.
 License-Expression: MIT
 Project-URL: Source, https://github.com/langelabs/ai-track
