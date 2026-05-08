@@ -101,11 +101,16 @@ def test_transcription_rejects_unexpected_backend_payloads() -> None:
         model.transcribe(b"audio")
 
 
-def test_mflux_image_generation_uses_seed_only_when_requested() -> None:
-    """MFLUX image generation should be non-deterministic by default and deterministic only with a seed."""
+def test_mflux_image_generation_always_passes_a_concrete_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MFLUX image generation should always provide a concrete integer seed to the backend."""
+    from track.inference.image import mflux
     from track.inference.image.mflux import MfluxImageGenerationModel
 
     recorded_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(mflux.random, "randrange", lambda _start, _stop: 1234)
 
     model = MfluxImageGenerationModel.__new__(MfluxImageGenerationModel)
     model.load_error = None
@@ -117,7 +122,7 @@ def test_mflux_image_generation_uses_seed_only_when_requested() -> None:
     model._generate(prompt="hello", size=32, steps=4)
     model._generate(prompt="hello", size=32, steps=4, seed=7)
 
-    assert "seed" not in recorded_calls[0]
+    assert recorded_calls[0]["seed"] == 1234
     assert recorded_calls[1]["seed"] == 7
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+import random
 import threading
 from typing import Any
 
@@ -52,6 +53,11 @@ def _load_mflux_runtime() -> MfluxRuntime:
     except ModuleNotFoundError as exc:
         raise RuntimeError("mflux is not installed.") from exc
     return MfluxRuntime(model_class=Flux2Klein)
+
+
+def resolve_generation_seed(seed: int | None) -> int:
+    """Return the explicit seed or generate one when the caller leaves it unset."""
+    return seed if seed is not None else random.randrange(0, 2**32)
 
 
 class MfluxImageGenerationModel(BaseImageGenerationModel):
@@ -128,14 +134,13 @@ class MfluxImageGenerationModel(BaseImageGenerationModel):
             self._generation_lock = generation_lock
         with generation_lock:
             generation_kwargs: dict[str, Any] = {
+                "seed": resolve_generation_seed(seed),
                 "prompt": prompt,
                 "num_inference_steps": steps,
                 "width": size,
                 "height": size,
                 "guidance": 1.0,
             }
-            if seed is not None:
-                generation_kwargs["seed"] = seed
             generated = self.model.generate_image(**generation_kwargs)
         return generated
 
