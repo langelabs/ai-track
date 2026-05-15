@@ -21,5 +21,5 @@ mlx>=0.24
 mlx-embeddings>=0.0.4
 mlx-lm>=0.24
 mlx-vlm>=0.4
-mlx-audio>=0.4
+mlx-audio[tts]>=0.4
 mflux>=0.5

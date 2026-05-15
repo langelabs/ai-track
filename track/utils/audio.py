@@ -6,7 +6,15 @@ import io
 import wave
 from array import array
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
+
+
+def _coerce_audio_sample(value: object) -> float:
+    """Return one backend audio sample as ``float``."""
+    try:
+        return float(cast(Any, value))
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"Unsupported audio sample type: {type(value).__name__}") from exc
 
 
 def normalize_audio_response_format(response_format: str | None) -> str:
@@ -52,9 +60,9 @@ def audio_chunks_to_wav(audio_chunks: Iterable[object], sample_rate: int) -> tup
         if isinstance(audio_chunk, (bytes, bytearray)):
             samples = [int(value) for value in audio_chunk]
         elif isinstance(audio_chunk, Iterable):
-            samples = [float(value) for value in audio_chunk]
+            samples = [_coerce_audio_sample(value) for value in audio_chunk]
         else:
-            samples = [float(audio_chunk)]
+            samples = [_coerce_audio_sample(audio_chunk)]
         if not samples:
             continue
         for sample in samples:

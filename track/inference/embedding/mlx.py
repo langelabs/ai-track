@@ -65,6 +65,20 @@ def _load_mlx_embedding_runtime() -> MLXEmbeddingRuntime:
     )
 
 
+def _wrap_mlx_embedding_load_error(model_id: str, error: Exception) -> RuntimeError:
+    """Return a more actionable error for known MLX embedding initialization failures."""
+    message = str(error)
+    if "MODEL_CONVERSION_DTYPES" in message and "mlx_vlm.utils" in message:
+        return RuntimeError(
+            "MLX embeddings failed to initialize for "
+            f"model '{model_id}': detected a circular import inside the installed MLX runtime stack. "
+            "This usually means the local MLX packages are on an incompatible version combination "
+            "or a broken mlx_vlm release is installed. Reinstall or upgrade the MLX stack, "
+            "preferably with the project's pinned macOS extra dependencies."
+        )
+    return RuntimeError(f"MLX embeddings failed to initialize for model '{model_id}': {message}")
+
+
 def _to_embedding_rows(rows: Any) -> list[list[float]]:
     """Normalize embedding rows into lists of floats."""
     if not isinstance(rows, list):
@@ -92,27 +106,35 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
         self.model_id = model_id
         self.model_path = Path(model_path) if model_path is not None else None
         self.hf_token = hf_token
-        self.runtime = _load_mlx_embedding_runtime()
+        self.runtime: MLXEmbeddingRuntime | None = None
         self.model: Any | None = None
         self.tokenizer: Any | None = None
         self.load_error: Exception | None = None
         try:
+            self.runtime = _load_mlx_embedding_runtime()
             self.model, self.tokenizer = self.runtime.load(resolve_model_location(self.model_id, self.model_path, self.hf_token))
         except Exception as exc:  # pragma: no cover - optional runtime path
-            self.load_error = exc
+            self.load_error = _wrap_mlx_embedding_load_error(self.model_id, exc)
 
     def _ensure_ready(self) -> None:
         """Reject calls when the MLX runtime failed to load."""
-        if self.model is None or self.tokenizer is None:
+        if self.runtime is None or self.model is None or self.tokenizer is None:
             message = "MLX embeddings are not available in the current environment."
             if self.load_error is not None:
                 message = f"{message} Original load failure: {self.load_error}"
             raise RuntimeError(message) from self.load_error
 
+    def _require_ready(self) -> tuple[MLXEmbeddingRuntime, Any, Any]:
+        """Return the loaded runtime, model, and tokenizer after readiness checks."""
+        self._ensure_ready()
+        if self.runtime is None or self.model is None or self.tokenizer is None:
+            raise RuntimeError("MLX embeddings are not available in the current environment.") from self.load_error
+        return self.runtime, self.model, self.tokenizer
+
     def embed(self, content: str | list[str]) -> list[list[float]] | list[float]:
         """Generate embeddings with the MLX model."""
-        self._ensure_ready()
-        encode = getattr(self.model, "embed", None)
+        _runtime, model, _tokenizer = self._require_ready()
+        encode = getattr(model, "embed", None)
         if callable(encode):
             embeddings = encode(content)
             if isinstance(content, str):
@@ -128,24 +150,29 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
 
     def _require_hidden_state_runtime(self) -> tuple[Any, Callable[..., Any], Callable[..., Any]]:
         """Return the MLX helpers required for hidden-state fallback pooling."""
-        if self.runtime.core is None or self.runtime.array is None or self.runtime.to_float32 is None:
+        runtime = self.runtime
+        if runtime is None:
             raise RuntimeError(
                 "MLX fallback embedding extraction is unavailable because required MLX runtime packages are missing. "
                 "Install the optional MLX dependencies for hidden-state extraction, or use backend='cuda' if available."
             )
-        return self.runtime.core, self.runtime.array, self.runtime.to_float32
+        if runtime.core is None or runtime.array is None or runtime.to_float32 is None:
+            raise RuntimeError(
+                "MLX fallback embedding extraction is unavailable because required MLX runtime packages are missing. "
+                "Install the optional MLX dependencies for hidden-state extraction, or use backend='cuda' if available."
+            )
+        return runtime.core, runtime.array, runtime.to_float32
 
     def _tokenize_batch(self, texts: list[str]) -> tuple[list[list[int]], list[list[int]]]:
         """Encode texts and build a padding mask for mean pooling."""
-        if self.tokenizer is None:
-            raise RuntimeError("MLX embeddings are not available in the current environment.") from self.load_error
-        token_rows = [list(self.tokenizer.encode(text)) for text in texts]
+        _runtime, _model, tokenizer = self._require_ready()
+        token_rows = [list(tokenizer.encode(text)) for text in texts]
         if not token_rows:
             return [], []
         max_length = max(len(row) for row in token_rows)
-        pad_token_id = getattr(self.tokenizer, "pad_token_id", None)
+        pad_token_id = getattr(tokenizer, "pad_token_id", None)
         if pad_token_id is None:
-            pad_token_id = getattr(self.tokenizer, "eos_token_id", 0)
+            pad_token_id = getattr(tokenizer, "eos_token_id", 0)
         padded_rows = [row + [pad_token_id] * (max_length - len(row)) for row in token_rows]
         attention_mask = [[1] * len(row) + [0] * (max_length - len(row)) for row in token_rows]
         return padded_rows, attention_mask
@@ -157,26 +184,28 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
 
     def _extract_batch_tokenizer_inputs(self, texts: list[str]) -> tuple[Any, Any, list[list[int]]]:
         """Tokenize a batch with tokenizer call semantics used by ``mlx_embeddings``."""
-        if self.tokenizer is None or not callable(self.tokenizer):
+        runtime, _model, tokenizer = self._require_ready()
+        if not callable(tokenizer):
             raise RuntimeError("MLX embeddings are not available in the current environment.") from self.load_error
-        encoded_batch = self.tokenizer(texts, padding=True, truncation=True, return_tensors="mlx")
+        encoded_batch = tokenizer(texts, padding=True, truncation=True, return_tensors="mlx")
         input_ids = encoded_batch["input_ids"]
         attention_mask = encoded_batch.get("attention_mask")
         if attention_mask is None:
             raise RuntimeError("MLX tokenizer batch output did not include an attention mask.")
-        if self.runtime.to_float32 is None:
+        if runtime.to_float32 is None:
             raise RuntimeError("MLX embeddings are not available in the current environment.") from self.load_error
-        attention_mask_rows = self._array_to_data(attention_mask, self.runtime.to_float32)
+        attention_mask_rows = self._array_to_data(attention_mask, runtime.to_float32)
         if not isinstance(attention_mask_rows, list):
             raise RuntimeError("MLX tokenizer attention mask was returned in an unsupported shape.")
         return input_ids, attention_mask, attention_mask_rows
 
     def _call_model_for_embeddings(self, input_ids: Any, attention_mask: Any) -> Any:
         """Run a model forward pass for embeddings with positional or keyword arguments."""
+        _runtime, model, _tokenizer = self._require_ready()
         try:
-            return self.model(input_ids, attention_mask)
+            return model(input_ids, attention_mask)
         except TypeError:
-            return self.model(input_ids=input_ids, attention_mask=attention_mask)
+            return model(input_ids=input_ids, attention_mask=attention_mask)
 
     def _extract_embedding_rows(self, outputs: Any, attention_mask: list[list[int]], to_float32: Callable[..., Any]) -> list[list[float]]:
         """Extract pooled embedding rows from one MLX model forward pass."""
@@ -253,14 +282,14 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
     def _embed_from_model_outputs(self, content: str | list[str]) -> list[list[float]] | list[float]:
         """Tokenize content and extract embedding rows from the model outputs."""
         _mx, array, to_float32 = self._require_hidden_state_runtime()
-        self._ensure_ready()
+        _runtime, model, tokenizer = self._require_ready()
         texts, single_input = self._normalize_batch(content)
-        if callable(self.tokenizer) and not hasattr(self.tokenizer, "encode"):
+        if callable(tokenizer) and not hasattr(tokenizer, "encode"):
             input_ids, attention_mask, attention_mask_rows = self._extract_batch_tokenizer_inputs(texts)
             outputs = self._call_model_for_embeddings(input_ids, attention_mask)
         else:
             padded_rows, attention_mask_rows = self._tokenize_batch(texts)
-            outputs = self.model(array(padded_rows))
+            outputs = model(array(padded_rows))
         embedding_rows = self._extract_embedding_rows(outputs, attention_mask_rows, to_float32)
         if single_input:
             return embedding_rows[0]

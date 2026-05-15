@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import dataclass, field
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, cast
 from urllib.parse import unquote, urlparse
 import time
 
@@ -485,7 +485,7 @@ def _encode_image(image: object) -> str:
     """Encode an image-like object into a base64 payload."""
     buffer = io.BytesIO()
     if hasattr(image, "save"):
-        image.save(buffer, format="PNG")
+        cast(Any, image).save(buffer, format="PNG")
         payload = buffer.getvalue()
     elif isinstance(image, (bytes, bytearray)):
         payload = bytes(image)
@@ -684,23 +684,24 @@ class _ChatCompletionsResource:
         messages: list[dict[str, Any]],
         temperature: float | None = None,
         stream: bool = False,
-        **_: Any,
+        **kwargs: Any,
     ) -> ChatCompletion | Iterator[ChatCompletionChunk]:
         """Create a local chat completion in the OpenAI SDK response shape."""
-        _ = temperature
+        del temperature, kwargs
         if self.local_ai is None:
             raise RuntimeError("No local AI backend is bound to this client.")
+        local_ai = self.local_ai
         if stream:
             compiled_messages = _compile_messages(messages)
             return _stream_chat_completion_with_cleanup(
                 model=model,
-                text_chunks=self.local_ai.stream_chat(compiled_messages.messages),
+                text_chunks=local_ai.stream_chat(compiled_messages.messages),
                 cleanup=compiled_messages.cleanup,
             )
 
         compiled_messages = _compile_messages(messages)
         try:
-            assistant_message = self.local_ai.chat(compiled_messages.messages)
+            assistant_message = local_ai.chat(compiled_messages.messages)
             return _build_chat_completion(model, messages, assistant_message)
         finally:
             compiled_messages.cleanup()
@@ -718,10 +719,10 @@ class _EmbeddingsResource:
         model: str,
         input: str | list[str],
         dimensions: int | None = None,
-        **_: Any,
+        **kwargs: Any,
     ) -> CreateEmbeddingResponse:
         """Create local embeddings in the OpenAI SDK response shape."""
-        _ = dimensions
+        del dimensions, kwargs
         if self.local_ai is None:
             raise RuntimeError("No local AI backend is bound to this client.")
         normalized_input = _normalize_embedding_input(input)
@@ -752,10 +753,10 @@ class _ImagesResource:
         stream: bool = False,
         style: str | None = None,
         user: str | None = None,
-        **_: Any,
+        **kwargs: Any,
     ) -> ImagesResponse | Iterator[ImageGenPartialImageEvent | ImageGenCompletedEvent]:
         """Generate or stream an image in the OpenAI SDK response shape."""
-        _ = (model, moderation, n, output_compression, partial_images, response_format, style, user)
+        del model, moderation, output_compression, response_format, style, user, kwargs
         if self.local_ai is None:
             raise RuntimeError("No local AI backend is bound to this client.")
         _validate_image_request_n(n)
@@ -792,11 +793,12 @@ class _ImagesResource:
         """Translate local image stream events into OpenAI image stream events."""
         if self.local_ai is None:
             raise RuntimeError("No local AI backend is bound to this client.")
+        local_ai = self.local_ai
         stream_size = _backend_image_size(size)
         stream_steps = 4
         intermediate_limit = partial_images if isinstance(partial_images, int) and partial_images >= 0 else None
         emitted_intermediate = 0
-        for index, event in enumerate(self.local_ai.stream_image(prompt=prompt, size=stream_size, steps=stream_steps)):
+        for index, event in enumerate(local_ai.stream_image(prompt=prompt, size=stream_size, steps=stream_steps)):
             if event.kind == "final":
                 yield _build_completed_image_event(
                     image=event.image,
@@ -838,25 +840,26 @@ class _AsyncChatCompletionsResource:
         _ = kwargs
         if self.local_ai is None:
             raise RuntimeError("No local AI backend is bound to this client.")
+        local_ai = self.local_ai
         if stream:
             compiled_messages = _compile_messages(messages)
             async def _stream() -> AsyncIterator[ChatCompletionChunk]:
                 """Yield streamed chat chunks while ensuring cleanup runs."""
                 for chunk in _stream_chat_completion_with_cleanup(
                     model=model,
-                    text_chunks=self.local_ai.stream_chat(compiled_messages.messages),
+                    text_chunks=local_ai.stream_chat(compiled_messages.messages),
                     cleanup=compiled_messages.cleanup,
                 ):
                     yield chunk
 
             return _stream()
-        return _ChatCompletionsResource(local_ai=self.local_ai).create(
+        return cast(ChatCompletion, _ChatCompletionsResource(local_ai=local_ai).create(
             model=model,
             messages=messages,
             temperature=temperature,
             stream=stream,
             **kwargs,
-        )
+        ))
 
 
 @dataclass
@@ -908,7 +911,7 @@ class _AsyncImagesResource:
         **kwargs: Any,
     ) -> ImagesResponse | AsyncIterator[ImageGenPartialImageEvent | ImageGenCompletedEvent]:
         """Generate or stream an image in the async OpenAI SDK response shape."""
-        _ = (model, moderation, n, output_compression, partial_images, response_format, style, user, kwargs)
+        del kwargs
         if stream:
             return self._stream_image(
                 prompt=prompt,
@@ -918,7 +921,7 @@ class _AsyncImagesResource:
                 size=size,
                 partial_images=partial_images,
             )
-        return _ImagesResource(local_ai=self.local_ai).generate(
+        return cast(ImagesResponse, _ImagesResource(local_ai=self.local_ai).generate(
             prompt=prompt,
             background=background,
             model=model,
@@ -933,7 +936,7 @@ class _AsyncImagesResource:
             stream=False,
             style=style,
             user=user,
-        )
+        ))
 
     async def _stream_image(
         self,
@@ -948,11 +951,12 @@ class _AsyncImagesResource:
         """Translate local image stream events into async OpenAI image stream events."""
         if self.local_ai is None:
             raise RuntimeError("No local AI backend is bound to this client.")
+        local_ai = self.local_ai
         stream_size = _backend_image_size(size)
         stream_steps = 4
         intermediate_limit = partial_images if isinstance(partial_images, int) and partial_images >= 0 else None
         emitted_intermediate = 0
-        for index, event in enumerate(self.local_ai.stream_image(prompt=prompt, size=stream_size, steps=stream_steps)):
+        for index, event in enumerate(local_ai.stream_image(prompt=prompt, size=stream_size, steps=stream_steps)):
             if event.kind == "final":
                 yield _build_completed_image_event(
                     image=event.image,

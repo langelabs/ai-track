@@ -1,10 +1,11 @@
 """Regression tests for package metadata exposed to package indexes."""
 
 from pathlib import Path
+from typing import Any
 import tomllib
 
 
-def _load_pyproject() -> dict[str, object]:
+def _load_pyproject() -> dict[str, Any]:
     """Load the project's ``pyproject.toml`` data."""
     project_root = Path(__file__).resolve().parents[1]
     return tomllib.loads((project_root / "pyproject.toml").read_text())
@@ -24,3 +25,11 @@ def test_readme_logo_uses_absolute_github_url() -> None:
     readme = (project_root / "README.md").read_text()
 
     assert "![ai-track logo](https://raw.githubusercontent.com/langelabs/ai-track/main/assets/logo_light.png)" in readme
+
+
+def test_macos_extra_installs_mlx_audio_tts_dependencies() -> None:
+    """Ensure the macOS extra installs the upstream MLX audio TTS dependency set."""
+    project_data = _load_pyproject()["project"]
+    macos_dependencies = project_data["optional-dependencies"]["macos"]
+
+    assert any(dependency.startswith("mlx-audio[tts]>=0.4") for dependency in macos_dependencies)

@@ -5,11 +5,11 @@ from types import SimpleNamespace
 from PIL import Image
 import pytest
 
+from track.inference.image.mflux import MfluxImageGenerationModel
 
-def _build_model_with_generated_image(image: object) -> object:
+
+def _build_model_with_generated_image(image: object) -> MfluxImageGenerationModel:
     """Construct a lightweight MFLUX model instance for image validation tests."""
-    from track.inference.image.mflux import MfluxImageGenerationModel
-
     model = MfluxImageGenerationModel.__new__(MfluxImageGenerationModel)
     model.load_error = None
     model.model = SimpleNamespace(generate_image=lambda **_kwargs: SimpleNamespace(image=image))

@@ -28,6 +28,12 @@ jobs:
       - name: Sync environment
         run: uv sync --frozen --group dev
 
+      - name: Run Ruff
+        run: uv run ruff check .
+
+      - name: Run ty
+        run: uv run ty check .
+
       - name: Run unit tests
         run: uv run pytest -q tests
 
