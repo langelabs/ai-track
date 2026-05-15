@@ -191,6 +191,53 @@ def test_mlx_audio_fails_early_when_tokenizer_backed_model_has_no_tokenizer(
         model.generate_speech("hello")
 
 
+def test_mlx_audio_does_not_cache_model_that_fails_tokenizer_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MLX audio should retry loading after tokenizer validation rejects a broken model."""
+    from track.inference.audio import mlx as mlx_audio
+    from track.inference.audio.models import AudioModelConfig
+
+    class FakeTokenizerBackedModel:
+        """Stand in for a tokenizer-backed MLX TTS model that cannot generate safely."""
+
+        def __init__(self) -> None:
+            """Initialize the broken tokenizer-backed model state."""
+            self.tokenizer = None
+
+        def _encode_text(self, text: str, voice: str) -> list[int]:
+            """Mimic the tokenizer-backed model interface used for validation."""
+            del text, voice
+            return [1]
+
+        def generate(self, **_kwargs: object) -> list[object]:
+            """Fail the test if generation is attempted after validation fails."""
+            raise AssertionError("generation should not be attempted without a tokenizer")
+
+    loaded_models: list[FakeTokenizerBackedModel] = []
+
+    def fake_load(_location: str) -> FakeTokenizerBackedModel:
+        """Return a fresh broken model on each load attempt."""
+        loaded_model = FakeTokenizerBackedModel()
+        loaded_models.append(loaded_model)
+        return loaded_model
+
+    monkeypatch.setattr(mlx_audio, "_load_mlx_audio_load", lambda: fake_load)
+    monkeypatch.setattr(mlx_audio, "resolve_model_location", lambda *_args, **_kwargs: "/tmp/test-audio")
+
+    model = mlx_audio.MLXAudioModel(
+        config=AudioModelConfig(model_id="test/audio"),
+        model_path="/tmp",
+    )
+
+    for _attempt in range(2):
+        with pytest.raises(RuntimeError, match="tokenizer-backed speech models load correctly"):
+            model.generate_speech("hello")
+
+    assert len(loaded_models) == 2
+    assert model._model is None
+
+
 def test_mflux_image_generation_always_passes_a_concrete_seed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -128,8 +128,9 @@ class MLXAudioModel(BaseAudioModel):
             if self._model is not None:
                 return
             load = _load_mlx_audio_load()
-            self._model = load(self._resolved_model_location)
-            _validate_loaded_audio_model(self._model, self._resolved_model_location)
+            loaded_model = load(self._resolved_model_location)
+            _validate_loaded_audio_model(loaded_model, self._resolved_model_location)
+            self._model = loaded_model
 
     def _require_model(self) -> Any:
         """Return the loaded MLX audio model or raise an actionable runtime error."""
