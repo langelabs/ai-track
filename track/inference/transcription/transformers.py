@@ -71,6 +71,13 @@ class TransformersTranscriptionModel(BaseTranscriptionModel):
         if self.pipeline is None:
             raise RuntimeError("Transformers ASR is not available in the current environment.") from self.load_error
 
+    def _require_pipeline(self) -> Any:
+        """Return the loaded ASR pipeline after readiness checks."""
+        self._ensure_ready()
+        if self.pipeline is None:
+            raise RuntimeError("Transformers ASR is not available in the current environment.") from self.load_error
+        return self.pipeline
+
     def _extract_text(self, result: Any) -> str:
         """Normalize one pipeline response into transcript text."""
         if isinstance(result, dict):
@@ -94,13 +101,13 @@ class TransformersTranscriptionModel(BaseTranscriptionModel):
     ) -> TranscriptionResult:
         """Transcribe audio into text with the configured Hugging Face pipeline."""
         del model
-        self._ensure_ready()
+        pipeline = self._require_pipeline()
         prepared_audio = prepare_audio_input(audio)
         try:
             pipeline_kwargs: dict[str, Any] = {}
             if language is not None:
                 pipeline_kwargs["generate_kwargs"] = {"language": language}
-            result = self.pipeline(prepared_audio.source, **pipeline_kwargs)
+            result = pipeline(prepared_audio.source, **pipeline_kwargs)
         finally:
             prepared_audio.cleanup()
         transcript = self._extract_text(result)

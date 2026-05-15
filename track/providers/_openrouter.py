@@ -44,13 +44,19 @@ class OpenRouterProvider(AiProvider):
         """Return ``cloud`` because OpenRouter runs on a remote provider."""
         return "cloud"
 
+    def _require_api_key(self) -> str:
+        """Return the configured API key or raise when remote access is not configured."""
+        if self._api_key is None:
+            raise RuntimeError("OpenRouter API key is required to create a remote client.")
+        return self._api_key
+
     def get_client(self) -> Client:
         """Return a sync OpenAI client for the configured remote model."""
-        return get_openai_client(api_key=self._api_key, base_url=self.base_url)
+        return get_openai_client(api_key=self._require_api_key(), base_url=self.base_url)
 
     def get_async_client(self) -> AsyncClient:
         """Return an async OpenAI client for the configured remote model."""
-        return get_async_openai_client(api_key=self._api_key, base_url=self.base_url)
+        return get_async_openai_client(api_key=self._require_api_key(), base_url=self.base_url)
 
     async def download(self, model_dir: str | None = None) -> bool:
         """Keep the compatibility flag enabled for remote models."""

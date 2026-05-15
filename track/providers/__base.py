@@ -5,8 +5,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Literal
 
-from openai import AsyncClient, Client
-
 from track.contracts import AiModel
 
 
@@ -32,11 +30,11 @@ class AiProvider(ABC):
         """Return the execution runtime backing the configured provider."""
 
     @abstractmethod
-    def get_client(self) -> Client:
+    def get_client(self) -> object:
         """Return the sync OpenAI-compatible client for the provider."""
 
     @abstractmethod
-    def get_async_client(self) -> AsyncClient:
+    def get_async_client(self) -> object:
         """Return the async OpenAI-compatible client for the provider."""
 
     @abstractmethod

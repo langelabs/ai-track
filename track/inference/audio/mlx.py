@@ -8,7 +8,7 @@ from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Callable
 
 from track.contracts import AudioGenerationResult, BaseAudioModel
 from track.inference.audio.models import AudioModelConfig
@@ -20,7 +20,7 @@ from track.utils.runtime import build_missing_optional_dependency_loader
 logger = logging.getLogger(__name__)
 
 
-def _load_mlx_audio_load() -> object:
+def _load_mlx_audio_load() -> Callable[..., Any]:
     """Return the lazily imported ``mlx-audio`` model loader."""
     try:
         tts_utils_module = import_module("mlx_audio.tts.utils")
@@ -76,6 +76,26 @@ def _validate_mlx_audio_compatibility(model_location: str | Path) -> None:
     )
 
 
+def _requires_loaded_tokenizer(model: Any, model_location: str | Path) -> bool:
+    """Return whether the loaded MLX audio model depends on tokenizer-backed generation."""
+    if _read_model_type(model_location) == "voxtral_tts":
+        return True
+    return hasattr(model, "tokenizer") and hasattr(model, "_encode_text")
+
+
+def _validate_loaded_audio_model(model: Any, model_location: str | Path) -> None:
+    """Raise an actionable error when a tokenizer-backed MLX audio model is only partially initialized."""
+    if not _requires_loaded_tokenizer(model, model_location):
+        return
+    if getattr(model, "tokenizer", None) is not None:
+        return
+    raise RuntimeError(
+        "MLX audio TTS dependencies were not installed correctly for the configured model. "
+        'Reinstall the macOS extra with `pip install "ai-track[macos]"` '
+        "or `uv sync --extra macos` so tokenizer-backed speech models load correctly."
+    )
+
+
 class MLXAudioModel(BaseAudioModel):
     """Wrap ``mlx-audio`` TTS generation behind the shared local audio interface."""
 
@@ -109,6 +129,14 @@ class MLXAudioModel(BaseAudioModel):
                 return
             load = _load_mlx_audio_load()
             self._model = load(self._resolved_model_location)
+            _validate_loaded_audio_model(self._model, self._resolved_model_location)
+
+    def _require_model(self) -> Any:
+        """Return the loaded MLX audio model or raise an actionable runtime error."""
+        self._ensure_weights_loaded()
+        if self._model is None:
+            raise RuntimeError("MLX audio is not available in the current environment.") from self.load_error
+        return self._model
 
     def resolve_voice(self, voice: str | None) -> str:
         """Return a supported voice, falling back to the configured default."""
@@ -127,10 +155,10 @@ class MLXAudioModel(BaseAudioModel):
         del model
         if self.load_error is not None:
             raise RuntimeError("MLX audio is not available in the current environment.") from self.load_error
-        self._ensure_weights_loaded()
+        loaded_model = self._require_model()
         normalized_format = normalize_audio_response_format(response_format)
         resolved_voice = self.resolve_voice(voice)
-        generated_results = list(self._model.generate(text=text, voice=resolved_voice))
+        generated_results = list(loaded_model.generate(text=text, voice=resolved_voice))
         wav_bytes, sample_count = audio_chunks_to_wav(
             (result.audio for result in generated_results),
             self.sample_rate,

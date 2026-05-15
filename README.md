@@ -183,7 +183,9 @@ pip install "ai-track[macos]"
 
 The macOS extra installs the full MLX runtime stack used by local inference,
 including the base `mlx` package alongside `mlx-embeddings`, `mlx-lm`,
-`mlx-vlm`, `mlx-audio`, and `mflux`.
+`mlx-vlm`, `mlx-audio`, and `mflux`. The `mlx-audio` install uses the upstream
+TTS extra so tokenizer dependencies required by Voxtral-class speech models are
+included automatically.
 
 MLX chat support is limited to model architectures that the installed
 `mlx_vlm` package can actually load. If `mlx_vlm` does not support a model's

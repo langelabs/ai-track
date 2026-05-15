@@ -31,7 +31,7 @@ macos = [
   "mlx-embeddings>=0.0.4; sys_platform == 'darwin'",
   "mlx-lm>=0.24; sys_platform == 'darwin'",
   "mlx-vlm>=0.4; sys_platform == 'darwin'",
-  "mlx-audio>=0.4; sys_platform == 'darwin'",
+  "mlx-audio[tts]>=0.4; sys_platform == 'darwin'",
   "mflux>=0.5; sys_platform == 'darwin'",
 ]
 cuda = [
@@ -45,7 +45,12 @@ cuda = [
 [dependency-groups]
 dev = [
   "pytest>=9.0.3",
+  "ruff>=0.15.13",
+  "ty>=0.0.36",
 ]
+
+[tool.ty.rules]
+unresolved-import = "ignore"
 
 [tool.setuptools]
 include-package-data = true

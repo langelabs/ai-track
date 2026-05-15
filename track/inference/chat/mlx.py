@@ -66,6 +66,14 @@ def _wrap_mlx_load_error(model_id: str, error: Exception) -> RuntimeError:
             "embedding_output=True). Otherwise, switch to a chat model supported by mlx_vlm or "
             "use another backend."
         )
+    if "MODEL_CONVERSION_DTYPES" in message and "mlx_vlm.utils" in message:
+        return RuntimeError(
+            "MLX chat failed to initialize for "
+            f"model '{model_id}': detected a circular import inside the installed mlx_vlm package. "
+            "This usually means the local MLX packages are on an incompatible version combination "
+            "or a broken mlx_vlm release is installed. Reinstall or upgrade the MLX stack, "
+            "preferably with the project's pinned macOS extra dependencies."
+        )
     return RuntimeError(f"MLX chat failed to initialize for model '{model_id}': {message}")
 
 
@@ -111,11 +119,13 @@ class MLXChatLLM(BaseChatLLM):
         self.model_config = model_config
         self.hf_token = hf_token
         self.model_path = Path(model_path) if model_path is not None else None
-        self.runtime = runtime or _load_mlx_runtime()
+        self.runtime: MLXRuntime | None = runtime
         self.model: Any | None = None
         self.processor: Any | None = None
         self.load_error: Exception | None = None
         try:
+            if self.runtime is None:
+                self.runtime = _load_mlx_runtime()
             configure_hugging_face_access(self.hf_token)
             location = resolve_model_location(self.model_id, self.model_path, self.hf_token)
             self.model, self.processor = self.runtime.load(location)
@@ -124,14 +134,21 @@ class MLXChatLLM(BaseChatLLM):
 
     def _ensure_ready(self) -> None:
         """Reject calls when the MLX runtime failed to load."""
-        if self.model is None or self.processor is None:
+        if self.runtime is None or self.model is None or self.processor is None:
             if self.load_error is not None:
                 raise self.load_error
             raise RuntimeError("MLX chat is not available in the current environment.")
 
+    def _require_ready(self) -> tuple[MLXRuntime, Any, Any]:
+        """Return the loaded runtime, model, and processor after readiness checks."""
+        self._ensure_ready()
+        if self.runtime is None or self.model is None or self.processor is None:
+            raise RuntimeError("MLX chat is not available in the current environment.")
+        return self.runtime, self.model, self.processor
+
     def chat(self, messages: list[Message]) -> Message:
         """Generate an assistant response from validated chat messages."""
-        self._ensure_ready()
+        runtime, model, processor = self._require_ready()
         prompt, image_path, audio_path = self._build_prompt(messages)
         logger.info(
             "MLXChatLLM.chat invoking runtime.generate for model_id=%s with %d messages and image=%s audio=%s",
@@ -140,9 +157,9 @@ class MLXChatLLM(BaseChatLLM):
             image_path is not None,
             audio_path is not None,
         )
-        result = self.runtime.generate(
-            self.model,
-            self.processor,
+        result = runtime.generate(
+            model,
+            processor,
             prompt,
             image=[image_path] if image_path is not None else None,
             audio=[audio_path] if audio_path is not None else None,
@@ -161,12 +178,12 @@ class MLXChatLLM(BaseChatLLM):
 
     def stream_chat(self, messages: list[Message]) -> Iterator[str]:
         """Yield incremental assistant text for validated chat messages."""
-        self._ensure_ready()
+        runtime, model, processor = self._require_ready()
         prompt, image_path, audio_path = self._build_prompt(messages)
-        if self.runtime.stream_generate is not None:
-            streamed = self.runtime.stream_generate(
-                self.model,
-                self.processor,
+        if runtime.stream_generate is not None:
+            streamed = runtime.stream_generate(
+                model,
+                processor,
                 prompt,
                 image=[image_path] if image_path is not None else None,
                 audio=[audio_path] if audio_path is not None else None,
@@ -179,9 +196,9 @@ class MLXChatLLM(BaseChatLLM):
                 yield str(getattr(chunk, "text", chunk))
             return
 
-        result = self.runtime.generate(
-            self.model,
-            self.processor,
+        result = runtime.generate(
+            model,
+            processor,
             prompt,
             image=[image_path] if image_path is not None else None,
             audio=[audio_path] if audio_path is not None else None,
@@ -204,9 +221,10 @@ class MLXChatLLM(BaseChatLLM):
             len(prompt_messages),
             self.model_id,
         )
-        prompt = self.runtime.apply_chat_template(
-            processor=self.processor,
-            config=getattr(self.model, "config", None),
+        runtime, model, processor = self._require_ready()
+        prompt = runtime.apply_chat_template(
+            processor=processor,
+            config=getattr(model, "config", None),
             prompt=prompt_messages,
             add_generation_prompt=True,
             num_images=1 if image_path is not None else 0,

@@ -128,6 +128,8 @@ class MfluxImageGenerationModel(BaseImageGenerationModel):
         """Invoke the underlying MFLUX model with the configured parameters."""
         if self.load_error is not None:
             raise RuntimeError("MFLUX is not available in the current environment.") from self.load_error
+        if self.model is None:
+            raise RuntimeError("MFLUX is not available in the current environment.")
         generation_lock = getattr(self, "_generation_lock", None)
         if generation_lock is None:
             generation_lock = threading.Lock()

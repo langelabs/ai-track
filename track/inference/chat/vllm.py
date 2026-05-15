@@ -147,6 +147,13 @@ class VLLMChatLLM(BaseChatLLM):
                 raise self.load_error
             raise RuntimeError("vLLM chat is not available in the current environment.")
 
+    def _require_model(self) -> Any:
+        """Return the loaded vLLM model after readiness checks."""
+        self._ensure_ready()
+        if self.model is None:
+            raise RuntimeError("vLLM chat is not available in the current environment.") from self.load_error
+        return self.model
+
     def _build_prompt(self, messages: list[Message]) -> str:
         """Render chat messages into the prompt format used by vLLM."""
         return _render_vllm_prompt(messages)
@@ -178,9 +185,9 @@ class VLLMChatLLM(BaseChatLLM):
 
     def chat(self, messages: list[Message]) -> Message:
         """Generate an assistant response from validated chat messages."""
-        self._ensure_ready()
+        model = self._require_model()
         prompt = self._build_prompt(messages)
-        result = self.model.generate([prompt], self._build_sampling_params())
+        result = model.generate([prompt], self._build_sampling_params())
         generated_text = self._extract_text(result).strip()
         return Message.assistant(generated_text)
 

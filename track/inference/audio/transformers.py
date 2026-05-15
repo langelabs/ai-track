@@ -76,6 +76,13 @@ class TransformersAudioModel(BaseAudioModel):
         if self.pipeline is None:
             raise RuntimeError("Transformers audio is not available in the current environment.") from self.load_error
 
+    def _require_pipeline(self) -> Any:
+        """Return the loaded TTS pipeline after readiness checks."""
+        self._ensure_weights_loaded()
+        if self.pipeline is None:
+            raise RuntimeError("Transformers audio is not available in the current environment.") from self.load_error
+        return self.pipeline
+
     def resolve_voice(self, voice: str | None) -> str:
         """Return a supported voice, falling back to the configured default."""
         if voice and voice in self.config.supported_voices:
@@ -101,10 +108,10 @@ class TransformersAudioModel(BaseAudioModel):
     ) -> AudioGenerationResult:
         """Generate WAV audio for one text prompt."""
         del model
-        self._ensure_weights_loaded()
+        pipeline = self._require_pipeline()
         normalized_format = normalize_audio_response_format(response_format)
         resolved_voice = self.resolve_voice(voice)
-        result = self.pipeline(text)
+        result = pipeline(text)
         audio, sample_rate = self._extract_audio_and_rate(result)
         if isinstance(audio, (bytes, bytearray)):
             wav_bytes = bytes(audio)

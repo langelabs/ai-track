@@ -3,14 +3,17 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
+
+from track.contracts import SupportsOpenAICompatibility
 
 
 def test_client_exposes_expected_resources() -> None:
     from track.inference.openai import Client
 
-    client = Client(local_ai=SimpleNamespace())
+    client = Client()
     assert hasattr(client, "chat")
     assert hasattr(client.chat, "completions")
     assert hasattr(client.chat.completions, "create")
@@ -75,7 +78,7 @@ def test_speech_resource_rejects_unsupported_response_format() -> None:
             duration_seconds=1.0,
         )
     )
-    client = Client(local_ai=local_ai)
+    client = Client(local_ai=cast(SupportsOpenAICompatibility, local_ai))
 
     with pytest.raises(ValueError, match="Unsupported audio response format"):
         client.audio.speech.create(model="audio", input="hello", response_format="flac")
@@ -86,7 +89,7 @@ def test_image_resource_rejects_multiple_images_request() -> None:
     from track.inference.openai import Client
 
     local_ai = SimpleNamespace(generate_image=lambda **_: object(), stream_image=lambda **_: iter(()))
-    client = Client(local_ai=local_ai)
+    client = Client(local_ai=cast(SupportsOpenAICompatibility, local_ai))
 
     with pytest.raises(ValueError, match="supports only n=1"):
         client.images.generate(model="image", prompt="test", n=2)
@@ -97,7 +100,7 @@ def test_image_resource_rejects_rectangular_sizes() -> None:
     from track.inference.openai import Client
 
     local_ai = SimpleNamespace(generate_image=lambda **_: object(), stream_image=lambda **_: iter(()))
-    client = Client(local_ai=local_ai)
+    client = Client(local_ai=cast(SupportsOpenAICompatibility, local_ai))
 
     with pytest.raises(ValueError, match="supports only square image sizes"):
         client.images.generate(model="image", prompt="test", size="1024x1536")

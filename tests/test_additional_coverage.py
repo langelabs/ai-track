@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from track.contracts import AiModel, AudioPathContentPart, ImagePathContentPart, Message
+from track.contracts import AiModel, AudioPathContentPart, Message
 from track.inference.audio.models import AudioModelConfig
 from track.inference.transcription.models import TranscriptionModelConfig
 from track.utils.audio import audio_chunks_to_wav, normalize_audio_response_format, parse_audio_duration
@@ -104,11 +104,13 @@ def test_prepare_audio_input_handles_supported_and_invalid_types(tmp_path: Path)
 
     prepared_bytes = prepare_audio_input(b"bytes")
     assert prepared_bytes.temp_path is not None
+    assert isinstance(prepared_bytes.source, str)
     assert Path(prepared_bytes.source).exists()
     prepared_bytes.cleanup()
     assert not Path(prepared_bytes.source).exists()
 
     prepared_filelike = prepare_audio_input(io.StringIO("audio"))
+    assert isinstance(prepared_filelike.source, str)
     assert Path(prepared_filelike.source).exists()
     prepared_filelike.cleanup()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -90,6 +91,52 @@ def test_mlx_chat_surfaces_actionable_unsupported_model_error() -> None:
         chat.chat([Message.user("hello")])
 
 
+def test_mlx_chat_surfaces_actionable_circular_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MLX chat should explain upstream mlx_vlm circular import failures."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat import mlx as mlx_chat
+
+    def raising_loader() -> None:
+        """Raise the circular import error observed in broken mlx_vlm installs."""
+        raise ImportError(
+            "cannot import name 'MODEL_CONVERSION_DTYPES' from partially initialized module "
+            "'mlx_vlm.utils' (most likely due to a circular import)"
+        )
+
+    monkeypatch.setattr(mlx_chat, "_load_mlx_runtime", raising_loader)
+
+    model = AiModel(provider="local", model_id="test/gemma4", alias="gemma4")
+    chat = mlx_chat.MLXChatLLM(model_config=model)
+
+    with pytest.raises(
+        RuntimeError,
+        match="circular import inside the installed mlx_vlm package",
+    ):
+        chat.chat([Message.user("hello")])
+
+
+def test_mlx_embedding_surfaces_actionable_circular_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MLX embeddings should explain upstream mlx_vlm circular import failures."""
+    from track.inference.embedding import mlx as mlx_embedding
+
+    def raising_loader() -> None:
+        """Raise the circular import error observed in broken mlx_vlm installs."""
+        raise ImportError(
+            "cannot import name 'MODEL_CONVERSION_DTYPES' from partially initialized module "
+            "'mlx_vlm.utils' (most likely due to a circular import)"
+        )
+
+    monkeypatch.setattr(mlx_embedding, "_load_mlx_embedding_runtime", raising_loader)
+
+    model = mlx_embedding.MLXEmbeddingModel(model_id="test/embedding")
+
+    with pytest.raises(
+        RuntimeError,
+        match="circular import inside the installed MLX runtime stack",
+    ):
+        model.embed("hello")
+
+
 def test_transcription_rejects_unexpected_backend_payloads() -> None:
     """Transcription should raise instead of stringifying unsupported backend payloads."""
     from track.inference.transcription.transformers import TransformersTranscriptionModel
@@ -99,6 +146,49 @@ def test_transcription_rejects_unexpected_backend_payloads() -> None:
 
     with pytest.raises(RuntimeError, match="unsupported response payload"):
         model.transcribe(b"audio")
+
+
+def test_mlx_audio_fails_early_when_tokenizer_backed_model_has_no_tokenizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MLX audio should raise an actionable install error before calling a broken tokenizer-backed model."""
+    from track.inference.audio import mlx as mlx_audio
+    from track.inference.audio.models import AudioModelConfig
+
+    class FakeTokenizerBackedModel:
+        """Stand in for a tokenizer-backed MLX TTS model that did not finish initialization."""
+
+        def __init__(self) -> None:
+            """Initialize the broken test model state."""
+            self.tokenizer = None
+
+        def _encode_text(self, text: str, voice: str) -> list[int]:
+            """Mimic the tokenizer-backed model interface used for validation."""
+            del text, voice
+            return [1]
+
+        def generate(self, **_kwargs: object) -> list[object]:
+            """Fail the test if generation is attempted before validation."""
+            raise AssertionError("generation should not be attempted without a tokenizer")
+
+    fake_model = FakeTokenizerBackedModel()
+    monkeypatch.setattr(
+        mlx_audio,
+        "_load_mlx_audio_load",
+        lambda: lambda _location: fake_model,
+    )
+    monkeypatch.setattr(mlx_audio, "resolve_model_location", lambda *_args, **_kwargs: "/tmp/test-audio")
+
+    model = mlx_audio.MLXAudioModel(
+        config=AudioModelConfig(model_id="test/audio"),
+        model_path="/tmp",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match='Reinstall the macOS extra with `pip install "ai-track\\[macos\\]"`',
+    ):
+        model.generate_speech("hello")
 
 
 def test_mflux_image_generation_always_passes_a_concrete_seed(
@@ -159,7 +249,9 @@ def test_diffusers_uses_torch_generator_only_for_explicit_seed() -> None:
     import sys
 
     previous_torch = sys.modules.get("torch")
-    sys.modules["torch"] = FakeTorch
+    fake_torch = types.ModuleType("torch")
+    setattr(fake_torch, "Generator", FakeTorch.Generator)
+    sys.modules["torch"] = fake_torch
     try:
         first = model._run_pipeline(prompt="hello", size=32, steps=4)
         second = model._run_pipeline(prompt="hello", size=32, steps=4, seed=5)
