@@ -70,8 +70,13 @@ track/inference/transcription/models.py
 track/inference/transcription/transformers.py
 track/providers/__base.py
 track/providers/__init__.py
+track/providers/_anthropic.py
+track/providers/_google.py
 track/providers/_local.py
+track/providers/_mistral.py
+track/providers/_openai.py
 track/providers/_openrouter.py
+track/providers/_remote.py
 track/utils/__init__.py
 track/utils/_cuda.py
 track/utils/_devices.py

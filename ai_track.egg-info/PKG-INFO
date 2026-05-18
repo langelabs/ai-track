@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: ai-track
-Version: 0.1.12
+Version: 0.2.2
 Summary: Universal AI runtime for local and remote inference.
 License-Expression: MIT
 Project-URL: Source, https://github.com/langelabs/ai-track
@@ -26,7 +26,7 @@ Provides-Extra: cuda
 Requires-Dist: torch>=2.2; sys_platform == "linux" and extra == "cuda"
 Requires-Dist: torchvision>=0.2.26; sys_platform == "linux" and extra == "cuda"
 Requires-Dist: vllm<0.21,>=0.20; sys_platform == "linux" and extra == "cuda"
-Requires-Dist: transformers>=4.45; sys_platform == "linux" and extra == "cuda"
+Requires-Dist: transformers>=5.5; sys_platform == "linux" and extra == "cuda"
 Requires-Dist: accelerate>=1.0; sys_platform == "linux" and extra == "cuda"
 Requires-Dist: diffusers>=0.30; sys_platform == "linux" and extra == "cuda"
 Dynamic: license-file

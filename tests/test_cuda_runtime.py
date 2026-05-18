@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+from collections.abc import Mapping, Sequence
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,18 +10,30 @@ from unittest.mock import patch
 import pytest
 
 
-def _raise_broken_torch_import(name: str, *args: object, **kwargs: object) -> object:
+def _raise_broken_torch_import(
+    name: str,
+    globals: Mapping[str, object] | None = None,
+    locals: Mapping[str, object] | None = None,
+    fromlist: Sequence[str] | None = (),
+    level: int = 0,
+) -> object:
     """Raise the client-observed PyTorch submodule import failure."""
     if name == "torch":
         raise ModuleNotFoundError("No module named 'torch._strobelight'")
-    return _ORIGINAL_IMPORT(name, *args, **kwargs)
+    return _ORIGINAL_IMPORT(name, globals, locals, fromlist, level)
 
 
-def _raise_missing_torch_import(name: str, *args: object, **kwargs: object) -> object:
+def _raise_missing_torch_import(
+    name: str,
+    globals: Mapping[str, object] | None = None,
+    locals: Mapping[str, object] | None = None,
+    fromlist: Sequence[str] | None = (),
+    level: int = 0,
+) -> object:
     """Raise the plain PyTorch-missing import failure."""
     if name == "torch":
         raise ModuleNotFoundError("No module named 'torch'", name="torch")
-    return _ORIGINAL_IMPORT(name, *args, **kwargs)
+    return _ORIGINAL_IMPORT(name, globals, locals, fromlist, level)
 
 
 _ORIGINAL_IMPORT = builtins.__import__
@@ -180,8 +193,9 @@ def test_local_provider_load_reports_broken_torch_import_for_missing_image_backe
         with pytest.raises(RuntimeError, match="PyTorch import failed: No module named 'torch._strobelight'"):
             asyncio.run(provider.load())
 
-    assert provider.get_capability_load_error("image_output") is not None
-    assert "torch._strobelight" in provider.get_capability_load_error("image_output")
+    image_load_error = provider.get_capability_load_error("image_output")
+    assert image_load_error is not None
+    assert "torch._strobelight" in image_load_error
 
 
 def test_local_provider_load_reports_plain_missing_torch_for_missing_image_backend() -> None:

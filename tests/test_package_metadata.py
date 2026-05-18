@@ -33,3 +33,11 @@ def test_macos_extra_installs_mlx_audio_tts_dependencies() -> None:
     macos_dependencies = project_data["optional-dependencies"]["macos"]
 
     assert any(dependency.startswith("mlx-audio[tts]>=0.4") for dependency in macos_dependencies)
+
+
+def test_cuda_extra_requires_transformers_with_gemma4_support() -> None:
+    """Ensure the CUDA extra installs a Transformers release that supports Gemma 4."""
+    project_data = _load_pyproject()["project"]
+    cuda_dependencies = project_data["optional-dependencies"]["cuda"]
+
+    assert any(dependency.startswith("transformers>=5.5") for dependency in cuda_dependencies)

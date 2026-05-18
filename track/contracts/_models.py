@@ -6,6 +6,9 @@ from typing import Literal
 from pydantic import BaseModel
 
 
+AiProviderName = Literal["local", "open-router", "openai", "google", "anthropic", "mistral"]
+
+
 class InferenceConfig(BaseModel):
     """Describe optional inference-time overrides for one AI model."""
 
@@ -36,7 +39,7 @@ class AiModelCapabilities(BaseModel):
 class AiModel(BaseModel):
     """Describe one selectable AI model exposed by the application."""
 
-    provider: Literal["local", "open-router"]
+    provider: AiProviderName
     model_id: str
     alias: str
     inference_config: InferenceConfig | None = None

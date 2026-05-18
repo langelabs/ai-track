@@ -6,7 +6,24 @@ from collections.abc import Iterable
 
 from track.contracts import AiModel
 from track.exceptions import ProviderNotSupported
-from track.providers import AiProvider, LocalProvider, OpenRouterProvider
+from track.providers import (
+    AiProvider,
+    AnthropicProvider,
+    GoogleProvider,
+    LocalProvider,
+    MistralProvider,
+    OpenAIProvider,
+    OpenRouterProvider,
+)
+
+
+_REMOTE_PROVIDER_TYPES = {
+    "anthropic": AnthropicProvider,
+    "google": GoogleProvider,
+    "mistral": MistralProvider,
+    "openai": OpenAIProvider,
+    "open-router": OpenRouterProvider,
+}
 
 
 class AiHub:
@@ -17,6 +34,10 @@ class AiHub:
         *,
         hugging_face_secret: str | None = None,
         openrouter_secret: str | None = None,
+        openai_secret: str | None = None,
+        google_secret: str | None = None,
+        anthropic_secret: str | None = None,
+        mistral_secret: str | None = None,
         model_dir: str | None = None,
         providers: Iterable[AiProvider] | None = None,
         models: Iterable[AiModel] | None = None,
@@ -24,7 +45,13 @@ class AiHub:
         """Store the configured provider registry."""
         self.model_dir = model_dir
         self._hugging_face_secret = hugging_face_secret
-        self._openrouter_secret = openrouter_secret
+        self._remote_secrets = {
+            "anthropic": anthropic_secret,
+            "google": google_secret,
+            "mistral": mistral_secret,
+            "openai": openai_secret,
+            "open-router": openrouter_secret,
+        }
         self._providers_by_model_id: dict[str, AiProvider] = {}
         if providers is not None:
             for provider in providers:
@@ -46,8 +73,9 @@ class AiHub:
                 hf_token=self._hugging_face_secret,
                 model_path=self.model_dir,
             )
-        elif model.provider == "open-router":
-            provider = OpenRouterProvider(model, api_key=self._openrouter_secret)
+        elif model.provider in _REMOTE_PROVIDER_TYPES:
+            provider_type = _REMOTE_PROVIDER_TYPES[model.provider]
+            provider = provider_type(model, api_key=self._remote_secrets[model.provider])
         else:
             raise ProviderNotSupported(model.provider)
         self._providers_by_model_id[model.model_id] = provider

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+from collections.abc import Mapping, Sequence
 import tempfile
 from pathlib import Path
 import tomllib
@@ -14,12 +15,17 @@ from pydantic import ValidationError
 _ORIGINAL_IMPORT = builtins.__import__
 
 
-def _raise_broken_torch_import(name: str, *args: object, **kwargs: object) -> object:
+def _raise_broken_torch_import(
+    name: str,
+    globals: Mapping[str, object] | None = None,
+    locals: Mapping[str, object] | None = None,
+    fromlist: Sequence[str] | None = (),
+    level: int = 0,
+) -> object:
     """Raise a PyTorch submodule import failure during device probing."""
     if name == "torch":
         raise ModuleNotFoundError("No module named 'torch._strobelight'")
-    return _ORIGINAL_IMPORT(name, *args, **kwargs)
-
+    return _ORIGINAL_IMPORT(name, globals, locals, fromlist, level)
 
 
 def test_message_validation_and_text_extraction() -> None:
