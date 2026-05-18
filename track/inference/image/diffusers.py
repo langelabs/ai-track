@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+import logging
 from pathlib import Path
 from queue import Queue
 from threading import Thread
 from typing import Any
 
 from track.contracts import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
+
+logger = logging.getLogger(__name__)
 
 
 class DiffusersFluxImageModel(BaseImageGenerationModel):
@@ -161,6 +164,17 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         except ModuleNotFoundError as exc:
             raise RuntimeError("torch is not installed.") from exc
         with torch.no_grad():
-            scaled_latents = latents / pipe.vae.config.scaling_factor
+            scaled_latents = latents / _resolve_vae_scaling_factor(pipe.vae.config)
             image = pipe.vae.decode(scaled_latents, return_dict=False)[0]
             return pipe.image_processor.postprocess(image, output_type="pil")[0]
+
+
+def _resolve_vae_scaling_factor(config: Any) -> Any:
+    """Return the VAE scaling factor from attribute- or mapping-style configs."""
+    if isinstance(config, Mapping) and "scaling_factor" in config:
+        return config["scaling_factor"]
+    try:
+        return config.scaling_factor
+    except AttributeError:
+        logger.warning("Diffusers VAE config does not define a scaling_factor; defaulting to 1.")
+        return 1

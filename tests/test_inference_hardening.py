@@ -311,3 +311,68 @@ def test_diffusers_uses_torch_generator_only_for_explicit_seed() -> None:
     assert first.images[0]["generator"] is None
     assert second.images[0]["generator"] == "seeded:5"
     assert created_generators == [("cuda", 5)]
+
+
+def test_diffusers_decodes_step_images_with_mapping_vae_config() -> None:
+    """Diffusers intermediate decoding should accept FrozenDict-style VAE configs."""
+    from track.inference.image.diffusers import DiffusersFluxImageModel
+
+    class FakeNoGrad:
+        """Provide a context manager compatible with torch.no_grad."""
+
+        def __enter__(self) -> None:
+            """Enter the no-grad context."""
+
+        def __exit__(self, *_args: object) -> None:
+            """Exit the no-grad context."""
+
+    class FakeTorch(types.ModuleType):
+        """Provide the small subset of torch used by the image backend."""
+
+        @staticmethod
+        def no_grad() -> FakeNoGrad:
+            """Return a no-op no-grad context manager."""
+            return FakeNoGrad()
+
+    decoded_images: list[object] = []
+    pipe = SimpleNamespace(
+        vae=SimpleNamespace(
+            config={"scaling_factor": 2},
+            decode=lambda scaled_latents, return_dict: decoded_images.append(
+                (scaled_latents, return_dict)
+            )
+            or ["decoded"],
+        ),
+        image_processor=SimpleNamespace(
+            postprocess=lambda image, output_type: [(image, output_type)],
+        ),
+    )
+    model = DiffusersFluxImageModel.__new__(DiffusersFluxImageModel)
+
+    import sys
+
+    previous_torch = sys.modules.get("torch")
+    sys.modules["torch"] = FakeTorch("torch")
+    try:
+        image = model._decode_step_image(pipe, 8)
+    finally:
+        if previous_torch is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = previous_torch
+
+    assert image == ("decoded", "pil")
+    assert decoded_images == [(4.0, False)]
+
+
+def test_diffusers_defaults_missing_vae_scaling_factor_to_one(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Diffusers intermediate decoding should log when defaulting a missing VAE scaling factor."""
+    from track.inference.image.diffusers import _resolve_vae_scaling_factor
+
+    with caplog.at_level("WARNING", logger="track.inference.image.diffusers"):
+        scaling_factor = _resolve_vae_scaling_factor({})
+
+    assert scaling_factor == 1
+    assert "defaulting to 1" in caplog.text
