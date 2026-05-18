@@ -39,6 +39,10 @@ def resolve_model_location(
     root = Path(model_path)
     local_dir = root / model_id
     local_dir.parent.mkdir(parents=True, exist_ok=True)
+    if local_dir.is_dir():
+        if on_progress is not None:
+            on_progress(None)
+        return str(local_dir)
 
     try:
         from huggingface_hub import snapshot_download

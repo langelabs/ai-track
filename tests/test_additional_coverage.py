@@ -199,6 +199,33 @@ def test_resolve_model_location_falls_back_without_huggingface_hub(monkeypatch: 
     assert progress_updates == [None]
 
 
+def test_resolve_model_location_returns_cached_directory_without_snapshot_download(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Existing local model directories should avoid Hugging Face snapshot resolution."""
+    model_path = tmp_path / "models"
+    local_dir = model_path / "org/model"
+    local_dir.mkdir(parents=True)
+    progress_updates: list[float | None] = []
+
+    def fake_snapshot_download(*_args: object, **_kwargs: object) -> str:
+        """Fail if the cached path still asks Hugging Face to resolve."""
+        raise AssertionError("snapshot_download should not be called for cached artifacts")
+
+    fake_module = types.SimpleNamespace(snapshot_download=fake_snapshot_download)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_module)
+
+    location = resolve_model_location(
+        "org/model",
+        model_path=model_path,
+        hf_token="secret",
+        on_progress=progress_updates.append,
+    )
+
+    assert location == str(local_dir)
+    assert progress_updates == [None]
+
+
 def test_resolve_model_location_uses_snapshot_download_and_reports_progress(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

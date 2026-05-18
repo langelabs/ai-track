@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import builtins
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 import sys
+import types
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -69,6 +71,47 @@ def test_detect_backend_returns_cuda_when_torch_reports_cuda_available() -> None
         assert _runtime.detect_backend() == "cuda"
 
 
+def test_probe_cuda_host_compiler_prefers_cc_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CUDA host compiler probing should honor an explicit CC executable."""
+    from track.utils import _cuda
+
+    calls: list[str] = []
+
+    def fake_which(command: str) -> str | None:
+        """Return a compiler path only for the configured CC value."""
+        calls.append(command)
+        if command == "/opt/toolchain/bin/gcc":
+            return "/opt/toolchain/bin/gcc"
+        return None
+
+    monkeypatch.setenv("CC", "/opt/toolchain/bin/gcc")
+    monkeypatch.setattr(_cuda.shutil, "which", fake_which)
+
+    probe = _cuda.probe_cuda_host_compiler()
+
+    assert probe.compiler_available is True
+    assert probe.compiler_path == "/opt/toolchain/bin/gcc"
+    assert probe.diagnostic_reason is None
+    assert calls == ["/opt/toolchain/bin/gcc"]
+
+
+def test_probe_cuda_host_compiler_reports_actionable_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CUDA host compiler probing should explain how to repair missing compiler environments."""
+    from track.utils import _cuda
+
+    monkeypatch.delenv("CC", raising=False)
+    monkeypatch.setattr(_cuda.shutil, "which", lambda _command: None)
+
+    probe = _cuda.probe_cuda_host_compiler()
+
+    assert probe.compiler_available is False
+    assert probe.compiler_path is None
+    assert probe.diagnostic_reason is not None
+    assert "CUDA vLLM requires a host C compiler" in probe.diagnostic_reason
+    assert "Install build-essential" in probe.diagnostic_reason
+    assert "set CC" in probe.diagnostic_reason
+
+
 def test_local_provider_loads_and_exposes_openai_client() -> None:
     from track.contracts import AiModel
     from track.providers import LocalProvider
@@ -101,6 +144,50 @@ def test_local_provider_download_and_load_toggle_state() -> None:
     assert loaded is True
     assert provider.downloaded is True
     assert provider.loaded is True
+
+
+def test_local_runtime_load_does_not_resolve_cached_chat_artifact_twice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Cached chat artifacts should not trigger repeated Hugging Face snapshot resolution during load."""
+    from track.contracts import AiModel, AiModelCapabilities
+    from track.providers import LocalProvider
+    from track.utils._cuda import CudaHostCompilerProbe
+
+    model_dir = tmp_path / "models"
+    cached_dir = model_dir / "cuda/test-chat"
+    cached_dir.mkdir(parents=True)
+    snapshot_calls: list[str] = []
+
+    def fake_snapshot_download(model_id: str, *, local_dir: Path, token: str | None) -> str:
+        """Record unexpected snapshot resolution calls."""
+        del local_dir, token
+        snapshot_calls.append(model_id)
+        return str(cached_dir)
+
+    fake_module = types.SimpleNamespace(snapshot_download=fake_snapshot_download)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_module)
+    monkeypatch.setattr(
+        "track.inference._runtime.probe_cuda_host_compiler",
+        lambda: CudaHostCompilerProbe(compiler_available=True, compiler_path="/usr/bin/cc"),
+    )
+
+    chat_backend = SimpleNamespace(load_error=None)
+    model = AiModel(
+        provider="local",
+        model_id="cuda/test-chat",
+        alias="chat",
+        capabilities=AiModelCapabilities(text_input=True, text_output=True),
+    )
+    provider = LocalProvider(model=model, model_path=model_dir, backend="cuda")
+
+    with patch("track.inference._runtime.create_chat_model", return_value=chat_backend):
+        loaded = asyncio.run(provider.load())
+
+    assert loaded is True
+    assert provider.loaded is True
+    assert provider.is_capability_loaded("text_output") is True
+    assert snapshot_calls == []
 
 
 def test_local_provider_requires_download_before_client_access() -> None:
@@ -147,6 +234,41 @@ def test_local_provider_load_raises_when_required_backend_fails() -> None:
 
     assert provider.downloaded is True
     assert provider.loaded is False
+
+
+def test_local_provider_cuda_chat_load_fails_before_vllm_without_host_compiler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CUDA chat loading should fail before download or vLLM construction when no host compiler is available."""
+    from track.contracts import AiModel, AiModelCapabilities
+    from track.providers import LocalProvider
+    from track.utils._cuda import CudaHostCompilerProbe
+
+    model = AiModel(
+        provider="local",
+        model_id="cuda/test-chat",
+        alias="chat",
+        capabilities=AiModelCapabilities(text_input=True, text_output=True),
+    )
+    provider = LocalProvider(model=model, model_path=None, backend="cuda")
+    missing_compiler = CudaHostCompilerProbe(
+        compiler_available=False,
+        diagnostic_reason="CUDA vLLM requires a host C compiler for Triton/Torch Inductor.",
+    )
+
+    monkeypatch.setattr("track.inference._runtime.probe_cuda_host_compiler", lambda: missing_compiler)
+
+    with patch.object(provider._runtime, "download", return_value=None) as download, patch(
+        "track.inference._runtime.create_chat_model",
+        return_value=SimpleNamespace(load_error=None),
+    ) as create_chat_model:
+        with pytest.raises(RuntimeError, match="requires a host C compiler"):
+            asyncio.run(provider.load())
+
+    download.assert_not_called()
+    create_chat_model.assert_not_called()
+    assert provider.loaded is False
+    assert provider.get_capability_load_error("text_output") == missing_compiler.diagnostic_reason
 
 
 def test_local_provider_load_raises_when_required_image_backend_is_not_detected() -> None:
@@ -232,6 +354,35 @@ def test_local_runtime_lazy_image_generation_raises_actionable_error_without_bac
     with patch.object(provider._runtime, "ensure_model_artifact_downloaded", return_value=None):
         with pytest.raises(RuntimeError, match="No local image backend was detected"):
             provider._runtime.generate_image("a small robot")
+
+
+def test_local_runtime_lazy_cuda_chat_reports_missing_host_compiler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lazy CUDA chat initialization should expose the compiler preflight diagnostic."""
+    from track.contracts import AiModel, Message
+    from track.providers import LocalProvider
+    from track.utils._cuda import CudaHostCompilerProbe
+
+    model = AiModel(provider="local", model_id="cuda/test-chat", alias="chat")
+    provider = LocalProvider(model=model, model_path=None, backend="cuda")
+    missing_compiler = CudaHostCompilerProbe(
+        compiler_available=False,
+        diagnostic_reason="CUDA vLLM requires a host C compiler for Triton/Torch Inductor.",
+    )
+
+    monkeypatch.setattr("track.inference._runtime.probe_cuda_host_compiler", lambda: missing_compiler)
+
+    with patch.object(provider._runtime, "download", return_value=None), patch(
+        "track.inference._runtime.create_chat_model",
+        return_value=SimpleNamespace(load_error=None),
+    ) as create_chat_model:
+        asyncio.run(provider.load())
+        with pytest.raises(RuntimeError, match="requires a host C compiler"):
+            provider._runtime.chat([Message.user("hello")])
+
+    create_chat_model.assert_not_called()
+    assert provider.get_capability_load_error("text_output") == missing_compiler.diagnostic_reason
 
 
 def test_local_provider_load_initializes_only_declared_embedding_capability() -> None:

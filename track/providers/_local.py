@@ -83,6 +83,7 @@ class LocalProvider(AiProvider):
 
     async def load(self, model_dir: str | None = None) -> bool:
         """Load the local model into the available compute backend."""
+        self._runtime.preflight_required_components()
         if not self.downloaded:
             await self.download(model_dir=model_dir)
         self._runtime.load()
