@@ -8,7 +8,7 @@ from typing import Literal
 from track.contracts import AiModel
 from track.exceptions import ModelNotDownloaded, ModelNotLoaded
 from track.inference.openai import AsyncClient, Client
-from track.inference._runtime import LocalRuntime
+from track.inference._runtime import LocalModelCapability, LocalRuntime
 from track.utils import get_model_artifact_size
 
 from .__base import AiProvider
@@ -54,6 +54,14 @@ class LocalProvider(AiProvider):
         """Raise when the local model has not been loaded yet."""
         if not self.loaded:
             raise ModelNotLoaded(self.model.model_id)
+
+    def is_capability_loaded(self, capability: LocalModelCapability) -> bool:
+        """Return whether the local backend required for ``capability`` is ready."""
+        return self._runtime.is_capability_loaded(capability)
+
+    def get_capability_load_error(self, capability: LocalModelCapability) -> str | None:
+        """Return the last local backend load error for ``capability``, if any."""
+        return self._runtime.get_capability_load_error(capability)
 
     def get_client(self) -> Client:
         """Return a sync OpenAI-compatible client bound to the loaded runtime."""

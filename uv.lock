@@ -40,7 +40,7 @@ wheels = [
 
 [[package]]
 name = "ai-track"
-version = "0.1.10"
+version = "0.1.12"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
@@ -57,6 +57,7 @@ cuda = [
     { name = "accelerate", marker = "sys_platform == 'linux'" },
     { name = "diffusers", marker = "sys_platform == 'linux'" },
     { name = "torch", marker = "sys_platform == 'linux'" },
+    { name = "torchvision", marker = "sys_platform == 'linux'" },
     { name = "transformers", marker = "sys_platform == 'linux'" },
     { name = "vllm", marker = "sys_platform == 'linux'" },
 ]
@@ -92,6 +93,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=2.2" },
+    { name = "torchvision", marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=0.2.26" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "transformers", marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=4.45" },
     { name = "vllm", marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=0.20,<0.21" },

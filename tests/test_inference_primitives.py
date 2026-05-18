@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import builtins
 import tempfile
 from pathlib import Path
 import tomllib
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
 
+
+_ORIGINAL_IMPORT = builtins.__import__
+
+
+def _raise_broken_torch_import(name: str, *args: object, **kwargs: object) -> object:
+    """Raise a PyTorch submodule import failure during device probing."""
+    if name == "torch":
+        raise ModuleNotFoundError("No module named 'torch._strobelight'")
+    return _ORIGINAL_IMPORT(name, *args, **kwargs)
 
 
 
@@ -47,6 +58,14 @@ def test_get_compute_device_returns_supported_label() -> None:
     from track.utils import get_compute_device
 
     assert get_compute_device() in {"cpu", "cuda", "mps"}
+
+
+def test_get_compute_device_returns_cpu_when_torch_import_is_broken() -> None:
+    """Device detection should fall back to CPU when PyTorch cannot import cleanly."""
+    from track.utils import _devices
+
+    with patch.object(_devices.sys, "platform", "linux"), patch.object(builtins, "__import__", _raise_broken_torch_import):
+        assert _devices.get_compute_device() == "cpu"
 
 
 def test_audio_and_message_helpers_are_available_from_utils() -> None:
