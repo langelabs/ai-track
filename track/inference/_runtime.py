@@ -32,6 +32,7 @@ from track.inference.embedding import create_embedding_model
 from track.inference.image.models import create_image_generation_model
 from track.inference.transcription import create_transcription_model
 from track.inference.transcription.models import TranscriptionModelConfig
+from track.utils._cuda import TorchCudaProbe, probe_torch_cuda
 from track.utils import (
     configured_local_model_ids,
     download_local_model_artifact,
@@ -40,6 +41,18 @@ from track.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+LocalRuntimeComponent = Literal["embedding", "image", "audio", "transcription", "chat"]
+LocalModelCapability = Literal[
+    "text_input",
+    "text_output",
+    "audio_input",
+    "audio_output",
+    "image_input",
+    "image_output",
+    "embedding_input",
+    "embedding_output",
+]
 
 
 def _is_capability_enabled(model: AiModel, *capability_names: str) -> bool:
@@ -69,17 +82,35 @@ def _declared_required_components(capabilities: AiModelCapabilities | None) -> s
     return required_components
 
 
+def _components_for_capability(capability: LocalModelCapability) -> tuple[LocalRuntimeComponent, ...]:
+    """Return backend components required for one declared model capability."""
+    if capability in {"embedding_input", "embedding_output"}:
+        return ("embedding",)
+    if capability in {"text_input", "text_output", "image_input"}:
+        return ("chat",)
+    if capability == "image_output":
+        return ("image",)
+    if capability == "audio_output":
+        return ("audio",)
+    if capability == "audio_input":
+        return ("chat", "transcription")
+    raise ValueError(f"Unsupported local model capability: {capability}")
+
+
+def _detect_backend_with_probe() -> tuple[Literal["cuda", "mlx"] | None, TorchCudaProbe | None]:
+    """Infer the preferred local backend and keep CUDA probe diagnostics."""
+    if sys.platform == "darwin":
+        return "mlx", None
+    torch_probe = probe_torch_cuda()
+    if torch_probe.cuda_available:
+        return "cuda", torch_probe
+    return None, torch_probe
+
+
 def detect_backend() -> Literal["cuda", "mlx"] | None:
     """Infer the preferred local backend from the current environment."""
-    if sys.platform == "darwin":
-        return "mlx"
-    try:
-        import torch  # type: ignore[import-not-found]
-    except ModuleNotFoundError:
-        return None
-    if torch.cuda.is_available():
-        return "cuda"
-    return None
+    backend, _torch_probe = _detect_backend_with_probe()
+    return backend
 
 
 class LocalRuntime(SupportsOpenAICompatibility):
@@ -96,7 +127,11 @@ class LocalRuntime(SupportsOpenAICompatibility):
         """Store the configured model and prepare runtime bookkeeping."""
         self.model = model
         self.device = get_compute_device()
-        self.backend = backend if backend is not None else detect_backend()
+        self._torch_cuda_probe: TorchCudaProbe | None = None
+        if backend is None:
+            self.backend, self._torch_cuda_probe = _detect_backend_with_probe()
+        else:
+            self.backend = backend
         self.hf_token = hf_token
         self.model_path = Path(model_path) if model_path is not None else None
         self.embedding_config: AiModel | None = (
@@ -143,6 +178,56 @@ class LocalRuntime(SupportsOpenAICompatibility):
         error = getattr(component, "load_error", None)
         return error if isinstance(error, Exception) else None
 
+    def _missing_backend_error(self, component_name: str) -> RuntimeError:
+        """Return an actionable error for a required component without a detected backend."""
+        probe_reason = (
+            f" Detection detail: {self._torch_cuda_probe.diagnostic_reason}"
+            if self._torch_cuda_probe is not None and self._torch_cuda_probe.diagnostic_reason is not None
+            else ""
+        )
+        return RuntimeError(
+            f"No local {component_name} backend was detected. On Linux/WSL, Track enables the CUDA backend only "
+            "when CUDA-enabled PyTorch is installed in the active Python environment and "
+            f"torch.cuda.is_available() returns True.{probe_reason} Install or sync ai-track CUDA extras, for example "
+            "`uv sync --extra cuda`, and verify WSL CUDA passthrough with "
+            '`python -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available())"`.'
+        )
+
+    def _component_backend(self, component_name: LocalRuntimeComponent) -> object | None:
+        """Return the instantiated backend object for one runtime component."""
+        if component_name == "embedding":
+            return self.embedding_model
+        if component_name == "image":
+            return self.image_model
+        if component_name == "audio":
+            return self.audio_model
+        if component_name == "transcription":
+            return self.transcription_model
+        if component_name == "chat":
+            return self.chat_llm
+        raise ValueError(f"Unsupported local runtime component: {component_name}")
+
+    def is_component_loaded(self, component_name: LocalRuntimeComponent) -> bool:
+        """Return whether one runtime component has an initialized, usable backend."""
+        return self._component_backend(component_name) is not None and component_name not in self._component_load_errors
+
+    def get_component_load_error(self, component_name: LocalRuntimeComponent) -> str | None:
+        """Return the last load error message for one runtime component, if any."""
+        error = self._component_load_errors.get(component_name)
+        return str(error) if error is not None else None
+
+    def is_capability_loaded(self, capability: LocalModelCapability) -> bool:
+        """Return whether every backend required for one capability is loaded."""
+        return all(self.is_component_loaded(component_name) for component_name in _components_for_capability(capability))
+
+    def get_capability_load_error(self, capability: LocalModelCapability) -> str | None:
+        """Return the first load error message for one capability, if any."""
+        for component_name in _components_for_capability(capability):
+            error = self.get_component_load_error(component_name)
+            if error is not None:
+                return error
+        return None
+
     def _note_model_download_progress(self, model_id: str, value: float | None) -> None:
         """Record or clear live download percentage for one model id."""
         with self._download_progress_lock:
@@ -185,7 +270,10 @@ class LocalRuntime(SupportsOpenAICompatibility):
 
     def _ensure_embedding_loaded(self) -> None:
         """Resolve artifacts and construct the embedding backend when configured."""
-        if self.embedding_config is None or self.backend is None:
+        if self.embedding_config is None:
+            return
+        if self.backend is None:
+            self._note_component_load_error("embedding", self._missing_backend_error("embedding"))
             return
         with self._load_lock:
             if self.embedding_model is not None:
@@ -211,7 +299,10 @@ class LocalRuntime(SupportsOpenAICompatibility):
 
     def _ensure_image_loaded(self) -> None:
         """Resolve artifacts and construct the image backend when configured."""
-        if self.image_generation_config is None or self.backend is None:
+        if self.image_generation_config is None:
+            return
+        if self.backend is None:
+            self._note_component_load_error("image", self._missing_backend_error("image"))
             return
         with self._load_lock:
             if self._image_load_attempted:
@@ -234,7 +325,10 @@ class LocalRuntime(SupportsOpenAICompatibility):
 
     def _ensure_audio_loaded(self) -> None:
         """Resolve artifacts and construct the audio backend when configured."""
-        if self.audio_config is None or self.backend is None:
+        if self.audio_config is None:
+            return
+        if self.backend is None:
+            self._note_component_load_error("audio", self._missing_backend_error("audio"))
             return
         with self._load_lock:
             if self.audio_model is not None:
@@ -255,7 +349,10 @@ class LocalRuntime(SupportsOpenAICompatibility):
 
     def _ensure_transcription_loaded(self) -> None:
         """Resolve artifacts and construct the transcription backend when configured."""
-        if self.transcription_config is None or self.backend is None:
+        if self.transcription_config is None:
+            return
+        if self.backend is None:
+            self._note_component_load_error("transcription", self._missing_backend_error("transcription"))
             return
         with self._load_lock:
             if self.transcription_model is not None:
@@ -276,7 +373,10 @@ class LocalRuntime(SupportsOpenAICompatibility):
 
     def _ensure_chat_loaded(self) -> None:
         """Resolve artifacts and construct the chat backend when configured."""
-        if self.chat_config is None or self.backend is None:
+        if self.chat_config is None:
+            return
+        if self.backend is None:
+            self._note_component_load_error("chat", self._missing_backend_error("chat"))
             return
         with self._load_lock:
             if self.chat_llm is not None:
