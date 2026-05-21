@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from threading import RLock
 
 from track.contracts import AiModel
 from track.exceptions import ProviderNotSupported
@@ -52,6 +53,7 @@ class AiHub:
             "openai": openai_secret,
             "open-router": openrouter_secret,
         }
+        self._local_operation_lock = RLock()
         self._providers_by_model_id: dict[str, AiProvider] = {}
         if providers is not None:
             for provider in providers:
@@ -72,6 +74,7 @@ class AiHub:
                 model,
                 hf_token=self._hugging_face_secret,
                 model_path=self.model_dir,
+                operation_lock=self._local_operation_lock,
             )
         elif model.provider in _REMOTE_PROVIDER_TYPES:
             provider_type = _REMOTE_PROVIDER_TYPES[model.provider]

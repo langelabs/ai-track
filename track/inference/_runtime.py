@@ -6,8 +6,9 @@ import logging
 import sys
 from collections import defaultdict
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from typing import Literal
 
 from track.contracts import (
@@ -123,6 +124,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
         backend: Literal["cuda", "mlx"] | None = None,
         hf_token: str | None = None,
         model_path: str | Path | None = None,
+        operation_lock: AbstractContextManager[bool] | None = None,
     ) -> None:
         """Store the configured model and prepare runtime bookkeeping."""
         self.model = model
@@ -159,6 +161,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
         self.transcription_model: BaseTranscriptionModel | None = None
         self.chat_llm: BaseChatLLM | None = None
         self._load_lock = Lock()
+        self._operation_lock = operation_lock if operation_lock is not None else RLock()
         self._download_progress_lock = Lock()
         self._download_progress: dict[str, float] = {}
         self._artifact_download_locks: defaultdict[str, Lock] = defaultdict(Lock)
@@ -501,15 +504,18 @@ class LocalRuntime(SupportsOpenAICompatibility):
 
     def embed(self, content: str | list[str]) -> list[list[float]] | list[float]:
         """Generate embeddings for one string or a batch of strings."""
-        return self._require_embedding_model().embed(content)
+        with self._operation_lock:
+            return self._require_embedding_model().embed(content)
 
     def chat(self, messages: list[Message]) -> Message:
         """Delegate chat generation to the selected backend."""
-        return self._require_chat_llm().chat(messages)
+        with self._operation_lock:
+            return self._require_chat_llm().chat(messages)
 
     def stream_chat(self, messages: list[Message]) -> Iterator[str]:
         """Delegate token streaming to the selected chat backend."""
-        return self._require_chat_llm().stream_chat(messages)
+        with self._operation_lock:
+            yield from self._require_chat_llm().stream_chat(messages)
 
     def generate_image(
         self,
@@ -520,13 +526,14 @@ class LocalRuntime(SupportsOpenAICompatibility):
         seed: int | None = None,
     ) -> object:
         """Generate an image from a text prompt."""
-        return self._require_image_model().generate_image(
-            prompt=prompt,
-            size=size,
-            steps=steps,
-            callback=callback,
-            seed=seed,
-        )
+        with self._operation_lock:
+            return self._require_image_model().generate_image(
+                prompt=prompt,
+                size=size,
+                steps=steps,
+                callback=callback,
+                seed=seed,
+            )
 
     def stream_image(
         self,
@@ -536,7 +543,8 @@ class LocalRuntime(SupportsOpenAICompatibility):
         seed: int | None = None,
     ) -> Iterator[ImageGenerationEvent]:
         """Delegate image progress streaming to the selected image backend."""
-        return self._require_image_model().stream_image(prompt=prompt, size=size, steps=steps, seed=seed)
+        with self._operation_lock:
+            yield from self._require_image_model().stream_image(prompt=prompt, size=size, steps=steps, seed=seed)
 
     def generate_speech(
         self,
@@ -546,12 +554,13 @@ class LocalRuntime(SupportsOpenAICompatibility):
         model: str | None = None,
     ) -> AudioGenerationResult:
         """Generate spoken audio from a text prompt."""
-        return self._require_audio_model().generate_speech(
-            text=text,
-            voice=voice,
-            response_format=response_format,
-            model=model,
-        )
+        with self._operation_lock:
+            return self._require_audio_model().generate_speech(
+                text=text,
+                voice=voice,
+                response_format=response_format,
+                model=model,
+            )
 
     def transcribe(
         self,
@@ -560,4 +569,5 @@ class LocalRuntime(SupportsOpenAICompatibility):
         model: str | None = None,
     ) -> TranscriptionResult:
         """Transcribe spoken audio into text."""
-        return self._require_transcription_model().transcribe(audio=audio, language=language, model=model)
+        with self._operation_lock:
+            return self._require_transcription_model().transcribe(audio=audio, language=language, model=model)

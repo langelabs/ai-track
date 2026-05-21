@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +26,7 @@ class LocalProvider(AiProvider):
         backend: Literal["cuda", "mlx"] | None = None,
         hf_token: str | None = None,
         model_path: str | Path | None = None,
+        operation_lock: AbstractContextManager[bool] | None = None,
     ) -> None:
         """Store the local model and prepare the internal runtime."""
         super().__init__(model, api_key)
@@ -33,6 +35,7 @@ class LocalProvider(AiProvider):
             backend=backend,
             hf_token=hf_token,
             model_path=model_path,
+            operation_lock=operation_lock,
         )
 
     @property
