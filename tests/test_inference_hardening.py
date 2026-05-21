@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from queue import Queue
+import time
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -517,6 +521,189 @@ def test_diffusers_pipeline_runs_under_generation_lock() -> None:
             sys.modules["torch"] = previous_torch
 
     assert result.images[0]["prompt"] == "hello"
+
+
+def test_diffusers_streaming_resets_offload_hooks_between_generations() -> None:
+    """Diffusers streaming should reset stateful offload hooks before the next generation."""
+    from track.inference.image.diffusers import DiffusersFluxImageModel
+
+    class FakeNoGrad:
+        """Provide a context manager compatible with torch.no_grad."""
+
+        def __enter__(self) -> None:
+            """Enter the no-grad context."""
+
+        def __exit__(self, *_args: object) -> None:
+            """Exit the no-grad context."""
+
+    class FakeTorch(types.ModuleType):
+        """Provide the small subset of torch used by the image backend."""
+
+        class cuda:
+            """Record CUDA cache cleanup calls."""
+
+            empty_cache_calls = 0
+
+            @staticmethod
+            def empty_cache() -> None:
+                """Record that CUDA cache cleanup was requested."""
+                FakeTorch.cuda.empty_cache_calls += 1
+
+        @staticmethod
+        def no_grad() -> FakeNoGrad:
+            """Return a no-op no-grad context manager."""
+            return FakeNoGrad()
+
+    class FakePipeline:
+        """Simulate a stateful offloaded diffusers pipeline."""
+
+        def __init__(self) -> None:
+            """Start with stale interruption state from a prior caller."""
+            self._interrupt = True
+            self.calls: list[dict[str, object]] = []
+            self.hook_resets = 0
+            self.vae = SimpleNamespace(
+                config={"scaling_factor": 2},
+                decode=lambda latents, return_dict: [(latents, return_dict)],
+            )
+            self.image_processor = SimpleNamespace(postprocess=lambda image, output_type: [(image, output_type)])
+
+        def __call__(self, **kwargs: object) -> SimpleNamespace:
+            """Run one fake generation and leave stale interrupt state behind."""
+            if self._interrupt:
+                raise RuntimeError("stale interrupt flag was not reset")
+            if kwargs.get("callback_on_step_end_tensor_inputs") != ["latents"]:
+                raise RuntimeError("latents were not requested for the step callback")
+            self.calls.append(kwargs)
+            callback = cast(
+                Callable[[object, int, object, dict[str, object]], object] | None,
+                kwargs.get("callback_on_step_end"),
+            )
+            if callback is not None:
+                callback(self, 0, None, {"latents": 8})
+            self._interrupt = True
+            return SimpleNamespace(images=[f"final-{len(self.calls)}"])
+
+        def maybe_free_model_hooks(self) -> None:
+            """Record that stateful offload hooks were reset."""
+            self.hook_resets += 1
+
+    model = DiffusersFluxImageModel.__new__(DiffusersFluxImageModel)
+    model.device = "cuda"
+    model.load_error = None
+    model._generation_lock = __import__("threading").Lock()
+    model.pipeline = FakePipeline()
+
+    import sys
+
+    previous_torch = sys.modules.get("torch")
+    sys.modules["torch"] = FakeTorch("torch")
+    try:
+        first_events = list(model.stream_image(prompt="hello", size=32, steps=4))
+        second_events = list(model.stream_image(prompt="again", size=32, steps=4))
+    finally:
+        if previous_torch is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = previous_torch
+
+    assert [event.kind for event in first_events] == ["intermediate", "final"]
+    assert [event.kind for event in second_events] == ["intermediate", "final"]
+    assert model.pipeline.hook_resets == 2
+    assert FakeTorch.cuda.empty_cache_calls == 2
+
+
+def test_diffusers_streaming_close_interrupts_worker_and_allows_next_generation() -> None:
+    """Closing a diffusers image stream should interrupt the worker and clean up for reuse."""
+    from track.inference.image.diffusers import DiffusersFluxImageModel
+
+    class FakeNoGrad:
+        """Provide a context manager compatible with torch.no_grad."""
+
+        def __enter__(self) -> None:
+            """Enter the no-grad context."""
+
+        def __exit__(self, *_args: object) -> None:
+            """Exit the no-grad context."""
+
+    class FakeTorch(types.ModuleType):
+        """Provide the small subset of torch used by the image backend."""
+
+        class cuda:
+            """Provide CUDA cache cleanup."""
+
+            @staticmethod
+            def empty_cache() -> None:
+                """Accept cache cleanup requests."""
+
+        @staticmethod
+        def no_grad() -> FakeNoGrad:
+            """Return a no-op no-grad context manager."""
+            return FakeNoGrad()
+
+    class FakePipeline:
+        """Simulate a pipeline that can be interrupted between preview callbacks."""
+
+        def __init__(self) -> None:
+            """Prepare synchronization points for the stream lifecycle test."""
+            self._interrupt = False
+            self.call_count = 0
+            self.hook_resets = 0
+            self.preview_queue: Queue[object] = Queue()
+            self.vae = SimpleNamespace(
+                config={"scaling_factor": 2},
+                decode=lambda latents, return_dict: [(latents, return_dict)],
+            )
+            self.image_processor = SimpleNamespace(postprocess=lambda image, output_type: [(image, output_type)])
+
+        def __call__(self, **kwargs: object) -> SimpleNamespace:
+            """Generate previews until interruption is requested."""
+            self.call_count += 1
+            callback = cast(
+                Callable[[object, int, object, dict[str, object]], object] | None,
+                kwargs.get("callback_on_step_end"),
+            )
+            if callback is not None:
+                callback(self, 0, None, {"latents": 8})
+                self.preview_queue.put("preview")
+            deadline = time.monotonic() + 1.0
+            while not self._interrupt and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if self._interrupt:
+                return SimpleNamespace(images=[f"interrupted-{self.call_count}"])
+            return SimpleNamespace(images=[f"final-{self.call_count}"])
+
+        def maybe_free_model_hooks(self) -> None:
+            """Record that stateful offload hooks were reset."""
+            self.hook_resets += 1
+
+    model = DiffusersFluxImageModel.__new__(DiffusersFluxImageModel)
+    model.device = "cuda"
+    model.load_error = None
+    model._generation_lock = __import__("threading").Lock()
+    model.pipeline = FakePipeline()
+
+    import sys
+
+    previous_torch = sys.modules.get("torch")
+    sys.modules["torch"] = FakeTorch("torch")
+    try:
+        stream = model.stream_image(prompt="hello", size=32, steps=4)
+        first_event = next(stream)
+        stream.close()
+
+        assert model.pipeline.preview_queue.get(timeout=1.0) == "preview"
+        next_events = list(model.stream_image(prompt="again", size=32, steps=4))
+    finally:
+        if previous_torch is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = previous_torch
+
+    assert first_event.kind == "intermediate"
+    assert model.pipeline.call_count == 2
+    assert model.pipeline.hook_resets >= 2
+    assert next_events[-1].kind == "final"
 
 
 def test_diffusers_unpacks_flux2_packed_step_latents_before_vae_decode() -> None:

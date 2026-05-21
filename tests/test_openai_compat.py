@@ -3,11 +3,11 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
-from track.contracts import SupportsOpenAICompatibility
+from track.contracts import ImageGenerationEvent, SupportsOpenAICompatibility
 
 
 def test_client_exposes_expected_resources() -> None:
@@ -104,3 +104,28 @@ def test_image_resource_rejects_rectangular_sizes() -> None:
 
     with pytest.raises(ValueError, match="supports only square image sizes"):
         client.images.generate(model="image", prompt="test", size="1024x1536")
+
+
+def test_image_stream_close_closes_underlying_local_iterator() -> None:
+    """Closing the OpenAI image stream should close the local stream iterator."""
+    from track.inference.openai import Client
+
+    closed = False
+
+    def local_stream(**_: object):
+        """Yield one local image event and record generator closure."""
+        nonlocal closed
+        try:
+            yield ImageGenerationEvent(image=b"preview", step=0, kind="intermediate")
+            yield ImageGenerationEvent(image=b"final", step=1, kind="final")
+        finally:
+            closed = True
+
+    local_ai = SimpleNamespace(generate_image=lambda **_: object(), stream_image=local_stream)
+    client = Client(local_ai=cast(SupportsOpenAICompatibility, local_ai))
+
+    stream = cast(Any, client.images.generate(model="image", prompt="test", stream=True))
+    assert next(stream).type == "image_generation.partial_image"
+    stream.close()
+
+    assert closed is True

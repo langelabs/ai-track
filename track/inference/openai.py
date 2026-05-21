@@ -798,27 +798,33 @@ class _ImagesResource:
         stream_steps = 4
         intermediate_limit = partial_images if isinstance(partial_images, int) and partial_images >= 0 else None
         emitted_intermediate = 0
-        for index, event in enumerate(local_ai.stream_image(prompt=prompt, size=stream_size, steps=stream_steps)):
-            if event.kind == "final":
-                yield _build_completed_image_event(
-                    image=event.image,
-                    background=background,
-                    output_format=output_format,
-                    quality=quality,
-                    size=size,
-                )
-            else:
-                if intermediate_limit is not None and emitted_intermediate >= intermediate_limit:
-                    continue
-                yield _build_partial_image_event(
-                    image=event.image,
-                    index=index,
-                    background=background,
-                    output_format=output_format,
-                    quality=quality,
-                    size=size,
-                )
-                emitted_intermediate += 1
+        local_stream = local_ai.stream_image(prompt=prompt, size=stream_size, steps=stream_steps)
+        try:
+            for index, event in enumerate(local_stream):
+                if event.kind == "final":
+                    yield _build_completed_image_event(
+                        image=event.image,
+                        background=background,
+                        output_format=output_format,
+                        quality=quality,
+                        size=size,
+                    )
+                else:
+                    if intermediate_limit is not None and emitted_intermediate >= intermediate_limit:
+                        continue
+                    yield _build_partial_image_event(
+                        image=event.image,
+                        index=index,
+                        background=background,
+                        output_format=output_format,
+                        quality=quality,
+                        size=size,
+                    )
+                    emitted_intermediate += 1
+        finally:
+            close_stream = getattr(local_stream, "close", None)
+            if callable(close_stream):
+                close_stream()
 
 
 @dataclass
@@ -956,27 +962,33 @@ class _AsyncImagesResource:
         stream_steps = 4
         intermediate_limit = partial_images if isinstance(partial_images, int) and partial_images >= 0 else None
         emitted_intermediate = 0
-        for index, event in enumerate(local_ai.stream_image(prompt=prompt, size=stream_size, steps=stream_steps)):
-            if event.kind == "final":
-                yield _build_completed_image_event(
-                    image=event.image,
-                    background=background,
-                    output_format=output_format,
-                    quality=quality,
-                    size=size,
-                )
-            else:
-                if intermediate_limit is not None and emitted_intermediate >= intermediate_limit:
-                    continue
-                yield _build_partial_image_event(
-                    image=event.image,
-                    index=index,
-                    background=background,
-                    output_format=output_format,
-                    quality=quality,
-                    size=size,
-                )
-                emitted_intermediate += 1
+        local_stream = local_ai.stream_image(prompt=prompt, size=stream_size, steps=stream_steps)
+        try:
+            for index, event in enumerate(local_stream):
+                if event.kind == "final":
+                    yield _build_completed_image_event(
+                        image=event.image,
+                        background=background,
+                        output_format=output_format,
+                        quality=quality,
+                        size=size,
+                    )
+                else:
+                    if intermediate_limit is not None and emitted_intermediate >= intermediate_limit:
+                        continue
+                    yield _build_partial_image_event(
+                        image=event.image,
+                        index=index,
+                        background=background,
+                        output_format=output_format,
+                        quality=quality,
+                        size=size,
+                    )
+                    emitted_intermediate += 1
+        finally:
+            close_stream = getattr(local_stream, "close", None)
+            if callable(close_stream):
+                close_stream()
 
 
 @dataclass

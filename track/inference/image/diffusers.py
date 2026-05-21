@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 import logging
 import math
 from pathlib import Path
 from queue import Queue
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from typing import Any
 
 from track.contracts import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
 
 logger = logging.getLogger(__name__)
+
+_STREAM_CANCEL_JOIN_TIMEOUT_SECONDS = 5.0
 
 
 class DiffusersFluxImageModel(BaseImageGenerationModel):
@@ -93,11 +95,15 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
             raise RuntimeError("Diffusers is not available in the current environment.") from self.load_error
         event_queue: Queue[object] = Queue()
         sentinel = object()
+        cancel_event = Event()
 
         def callback_on_step_end(
             pipe: Any, step_index: int, _timestep: Any, callback_kwargs: dict[str, Any]
         ) -> dict[str, Any]:
             """Decode and enqueue the current step image from latent state."""
+            if cancel_event.is_set():
+                _request_pipeline_interrupt(pipe)
+                return callback_kwargs
             latents = callback_kwargs["latents"]
             image = self._decode_step_image(pipe, latents)
             event_queue.put(ImageGenerationEvent(image=image, step=step_index, kind="intermediate"))
@@ -113,7 +119,8 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
                     callback_on_step_end=callback_on_step_end,
                     seed=seed,
                 )
-                event_queue.put(ImageGenerationEvent(image=result.images[0], step=steps - 1, kind="final"))
+                if not cancel_event.is_set():
+                    event_queue.put(ImageGenerationEvent(image=result.images[0], step=steps - 1, kind="final"))
             except BaseException as exc:  # pragma: no cover - defensive propagation
                 event_queue.put(exc)
             finally:
@@ -121,15 +128,24 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
 
         worker = Thread(target=run_generation, daemon=True)
         worker.start()
-        while True:
-            item = event_queue.get()
-            if item is sentinel:
-                break
-            if isinstance(item, BaseException):
-                raise item
-            if isinstance(item, ImageGenerationEvent):
-                yield item
-        worker.join()
+        try:
+            while True:
+                item = event_queue.get()
+                if item is sentinel:
+                    break
+                if isinstance(item, BaseException):
+                    raise item
+                if isinstance(item, ImageGenerationEvent):
+                    yield item
+        finally:
+            cancel_event.set()
+            _request_pipeline_interrupt(self.pipeline)
+            worker.join(timeout=_STREAM_CANCEL_JOIN_TIMEOUT_SECONDS)
+            if worker.is_alive():  # pragma: no cover - defensive logging for stuck native kernels
+                logger.warning(
+                    "Diffusers image stream worker did not exit within %.1f seconds after cancellation.",
+                    _STREAM_CANCEL_JOIN_TIMEOUT_SECONDS,
+                )
 
     def _run_pipeline(
         self,
@@ -150,15 +166,23 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         if seed is not None:
             generator = torch.Generator(device=self.device).manual_seed(seed)
         with self._get_generation_lock():
-            return self.pipeline(
-                prompt=prompt,
-                height=size,
-                width=size,
-                guidance_scale=1.0,
-                num_inference_steps=steps,
-                generator=generator,
-                callback_on_step_end=callback_on_step_end,
-            )
+            _reset_pipeline_interrupt(self.pipeline)
+            pipeline_kwargs = {
+                "prompt": prompt,
+                "height": size,
+                "width": size,
+                "guidance_scale": 1.0,
+                "num_inference_steps": steps,
+                "generator": generator,
+                "callback_on_step_end": callback_on_step_end,
+            }
+            if callback_on_step_end is not None:
+                pipeline_kwargs["callback_on_step_end_tensor_inputs"] = ["latents"]
+            try:
+                return self.pipeline(**pipeline_kwargs)
+            finally:
+                _reset_pipeline_hooks(self.pipeline)
+                _empty_cuda_cache_if_available(torch, self.device)
 
     def _get_generation_lock(self) -> Lock:
         """Return the lock that protects stateful diffusers offload hooks."""
@@ -187,12 +211,44 @@ def _prepare_vae_decode_latents(pipe: Any, latents: Any) -> Any:
     return latents / _resolve_vae_scaling_factor(pipe.vae.config)
 
 
+def _reset_pipeline_interrupt(pipe: Any) -> None:
+    """Clear stale diffusers interruption state before a new generation."""
+    if hasattr(pipe, "_interrupt"):
+        pipe._interrupt = False
+
+
+def _request_pipeline_interrupt(pipe: Any) -> None:
+    """Ask a diffusers pipeline to stop at its next callback boundary."""
+    if hasattr(pipe, "_interrupt"):
+        pipe._interrupt = True
+
+
+def _reset_pipeline_hooks(pipe: Any) -> None:
+    """Reset stateful diffusers CPU-offload hooks after generation."""
+    maybe_free_model_hooks = getattr(pipe, "maybe_free_model_hooks", None)
+    if callable(maybe_free_model_hooks):
+        maybe_free_model_hooks()
+
+
+def _empty_cuda_cache_if_available(torch: Any, device: str) -> None:
+    """Clear cached CUDA allocations after a CUDA diffusers generation."""
+    if not str(device).startswith("cuda"):
+        return
+    cuda = getattr(torch, "cuda", None)
+    empty_cache = getattr(cuda, "empty_cache", None)
+    if callable(empty_cache):
+        empty_cache()
+
+
 def _is_flux2_packed_latents(latents: Any) -> bool:
     """Return whether ``latents`` look like FLUX.2 packed latent tokens."""
     shape = getattr(latents, "shape", ())
-    if len(shape) != 3:
+    if not isinstance(shape, Sequence):
         return False
-    packed_channels = int(shape[2])
+    shape_values = tuple(shape)
+    if len(shape_values) != 3:
+        return False
+    packed_channels = int(shape_values[2])
     return packed_channels % 4 == 0
 
 
