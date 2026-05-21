@@ -90,18 +90,6 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         sentinel = object()
         cancel_event = Event()
 
-        def callback_on_step_end(
-            pipe: Any, step_index: int, _timestep: Any, callback_kwargs: dict[str, Any]
-        ) -> dict[str, Any]:
-            """Decode and enqueue the current step image from latent state."""
-            if cancel_event.is_set():
-                _request_pipeline_interrupt(pipe)
-                return callback_kwargs
-            latents = callback_kwargs["latents"]
-            image = self._decode_step_image(pipe, latents)
-            event_queue.put(ImageGenerationEvent(image=image, step=step_index, kind="intermediate"))
-            return callback_kwargs
-
         def run_generation() -> None:
             """Execute the diffusers pipeline and publish the final image."""
             try:
@@ -109,7 +97,6 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
                     prompt=prompt,
                     size=size,
                     steps=steps,
-                    callback_on_step_end=callback_on_step_end,
                     seed=seed,
                     recreate_pipeline_after_run=True,
                 )
