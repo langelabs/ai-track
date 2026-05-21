@@ -36,17 +36,9 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         self.pipeline: Any | None = None
         self._generation_lock = Lock()
         try:
-            import torch  # type: ignore[import-not-found]
-            from diffusers import Flux2KleinPipeline  # type: ignore[import-not-found]
+            self.pipeline = self._build_pipeline()
         except ModuleNotFoundError as exc:
             self.load_error = exc
-            return
-        self.pipeline = Flux2KleinPipeline.from_pretrained(
-            model_id,
-            torch_dtype=torch.bfloat16,
-            cache_dir=str(model_path) if model_path is not None else None,
-        )
-        self.pipeline.enable_model_cpu_offload(device=device)
 
     def generate_image(
         self,
@@ -80,6 +72,7 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
             steps=steps,
             callback_on_step_end=callback_on_step_end,
             seed=seed,
+            recreate_pipeline_after_run=callback_on_step_end is not None,
         )
         return result.images[0]
 
@@ -118,6 +111,7 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
                     steps=steps,
                     callback_on_step_end=callback_on_step_end,
                     seed=seed,
+                    recreate_pipeline_after_run=True,
                 )
                 if not cancel_event.is_set():
                     event_queue.put(ImageGenerationEvent(image=result.images[0], step=steps - 1, kind="final"))
@@ -138,8 +132,9 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
                 if isinstance(item, ImageGenerationEvent):
                     yield item
         finally:
-            cancel_event.set()
-            _request_pipeline_interrupt(self.pipeline)
+            if worker.is_alive():
+                cancel_event.set()
+                _request_pipeline_interrupt(self.pipeline)
             worker.join(timeout=_STREAM_CANCEL_JOIN_TIMEOUT_SECONDS)
             if worker.is_alive():  # pragma: no cover - defensive logging for stuck native kernels
                 logger.warning(
@@ -154,6 +149,7 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         steps: int,
         callback_on_step_end: Any | None = None,
         seed: int | None = None,
+        recreate_pipeline_after_run: bool = False,
     ) -> Any:
         """Execute the underlying pipeline with the shared generation settings."""
         if self.pipeline is None:
@@ -166,7 +162,8 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         if seed is not None:
             generator = torch.Generator(device=self.device).manual_seed(seed)
         with self._get_generation_lock():
-            _reset_pipeline_interrupt(self.pipeline)
+            active_pipeline = self.pipeline
+            _reset_pipeline_interrupt(active_pipeline)
             pipeline_kwargs = {
                 "prompt": prompt,
                 "height": size,
@@ -179,10 +176,29 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
             if callback_on_step_end is not None:
                 pipeline_kwargs["callback_on_step_end_tensor_inputs"] = ["latents"]
             try:
-                return self.pipeline(**pipeline_kwargs)
+                return active_pipeline(**pipeline_kwargs)
             finally:
-                _reset_pipeline_hooks(self.pipeline)
+                _reset_pipeline_hooks(active_pipeline)
                 _empty_cuda_cache_if_available(torch, self.device)
+                if recreate_pipeline_after_run:
+                    self._recreate_pipeline()
+
+    def _build_pipeline(self) -> Any:
+        """Construct a diffusers FLUX pipeline with CPU offload enabled."""
+        import torch  # type: ignore[import-not-found]
+        from diffusers import Flux2KleinPipeline  # type: ignore[import-not-found]
+
+        pipeline = Flux2KleinPipeline.from_pretrained(
+            self.model_id,
+            torch_dtype=torch.bfloat16,
+            cache_dir=str(self.model_path) if self.model_path is not None else None,
+        )
+        pipeline.enable_model_cpu_offload(device=self.device)
+        return pipeline
+
+    def _recreate_pipeline(self) -> None:
+        """Replace the current diffusers pipeline with a fresh offloaded instance."""
+        self.pipeline = self._build_pipeline()
 
     def _get_generation_lock(self) -> Lock:
         """Return the lock that protects stateful diffusers offload hooks."""
