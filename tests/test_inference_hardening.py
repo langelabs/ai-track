@@ -546,6 +546,82 @@ def test_diffusers_unpacks_flux2_packed_step_latents_before_vae_decode() -> None
     assert decode_latents.shape == (1, 32, 128, 128)
 
 
+def test_diffusers_denormalizes_flux2_step_latents_before_unpatchifying() -> None:
+    """FLUX.2 intermediate decoding should apply VAE BN stats before reducing patch channels."""
+    from track.inference.image.diffusers import _prepare_vae_decode_latents
+
+    class FakeShapeTensor:
+        """Track tensor-like shape transforms and channel-wise arithmetic."""
+
+        device = "cuda"
+        dtype = "bfloat16"
+
+        def __init__(self, shape: tuple[int, ...]) -> None:
+            """Store the current fake tensor shape."""
+            self.shape = shape
+
+        def reshape(self, *shape: int) -> "FakeShapeTensor":
+            """Return a fake tensor with the requested shape."""
+            return FakeShapeTensor(shape)
+
+        def permute(self, *dimensions: int) -> "FakeShapeTensor":
+            """Return a fake tensor with dimensions reordered like PyTorch."""
+            return FakeShapeTensor(tuple(self.shape[dimension] for dimension in dimensions))
+
+        def __mul__(self, other: "FakeChannelVector") -> "FakeShapeTensor":
+            """Require channel-wise operands to match the tensor channel dimension."""
+            if self.shape[1] != other.shape[1]:
+                raise RuntimeError(
+                    f"The size of tensor a ({self.shape[1]}) must match the size of tensor b ({other.shape[1]})"
+                )
+            return self
+
+        def __add__(self, other: "FakeChannelVector") -> "FakeShapeTensor":
+            """Require channel-wise operands to match the tensor channel dimension."""
+            if self.shape[1] != other.shape[1]:
+                raise RuntimeError(
+                    f"The size of tensor a ({self.shape[1]}) must match the size of tensor b ({other.shape[1]})"
+                )
+            return self
+
+    class FakeChannelVector:
+        """Represent a broadcastable VAE batch-normalization vector."""
+
+        def __init__(self, channels: int) -> None:
+            """Store the channel count represented by the vector."""
+            self.shape = (1, channels, 1, 1)
+
+        def view(self, *_shape: int) -> "FakeChannelVector":
+            """Return a broadcastable view of the vector."""
+            return self
+
+        def to(self, _device: object, _dtype: object) -> "FakeChannelVector":
+            """Return the vector on the requested fake device and dtype."""
+            return self
+
+        def __add__(self, _other: object) -> "FakeChannelVector":
+            """Return the vector for scalar addition."""
+            return self
+
+        def sqrt(self) -> "FakeChannelVector":
+            """Return the vector for square-root operations."""
+            return self
+
+    pipe = SimpleNamespace(
+        vae=SimpleNamespace(
+            bn=SimpleNamespace(
+                running_mean=FakeChannelVector(128),
+                running_var=FakeChannelVector(128),
+            ),
+            config={"batch_norm_eps": 1e-5},
+        )
+    )
+
+    decode_latents = _prepare_vae_decode_latents(pipe, FakeShapeTensor((1, 4096, 128)))
+
+    assert decode_latents.shape == (1, 32, 128, 128)
+
+
 def test_diffusers_rejects_non_square_flux2_packed_step_latents() -> None:
     """Diffusers intermediate decoding should fail clearly for unexpected packed latent grids."""
     from track.inference.image.diffusers import _prepare_vae_decode_latents

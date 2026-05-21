@@ -197,24 +197,23 @@ def _is_flux2_packed_latents(latents: Any) -> bool:
 
 
 def _prepare_flux2_decode_latents(pipe: Any, latents: Any) -> Any:
-    """Unpack FLUX.2 latent tokens and apply the VAE batch-normalization inverse."""
+    """Unpack FLUX.2 latent tokens and apply VAE batch normalization before unpatchifying."""
     batch_size, sequence_length, packed_channels = (int(value) for value in latents.shape)
     latent_height, latent_width = _resolve_square_latent_grid(sequence_length)
     image_latents = latents.reshape(batch_size, latent_height, latent_width, packed_channels)
     image_latents = image_latents.permute(0, 3, 1, 2)
-    image_latents = _unpatchify_flux2_latents(pipe, image_latents)
     vae_bn = getattr(pipe.vae, "bn", None)
     batch_norm_eps = getattr(pipe.vae.config, "batch_norm_eps", None)
     if isinstance(pipe.vae.config, Mapping):
         batch_norm_eps = pipe.vae.config.get("batch_norm_eps", batch_norm_eps)
-    if vae_bn is None or batch_norm_eps is None:
-        return image_latents
-    latents_bn_mean = vae_bn.running_mean.view(1, -1, 1, 1).to(image_latents.device, image_latents.dtype)
-    latents_bn_std = (vae_bn.running_var.view(1, -1, 1, 1) + batch_norm_eps).sqrt().to(
-        image_latents.device,
-        image_latents.dtype,
-    )
-    return image_latents * latents_bn_std + latents_bn_mean
+    if vae_bn is not None and batch_norm_eps is not None:
+        latents_bn_mean = vae_bn.running_mean.view(1, -1, 1, 1).to(image_latents.device, image_latents.dtype)
+        latents_bn_std = (vae_bn.running_var.view(1, -1, 1, 1) + batch_norm_eps).sqrt().to(
+            image_latents.device,
+            image_latents.dtype,
+        )
+        image_latents = image_latents * latents_bn_std + latents_bn_mean
+    return _unpatchify_flux2_latents(pipe, image_latents)
 
 
 def _resolve_square_latent_grid(sequence_length: int) -> tuple[int, int]:
