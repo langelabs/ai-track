@@ -10,6 +10,7 @@ tqdm>=4.66
 [cuda:sys_platform == "linux"]
 torch>=2.2
 torchvision>=0.2.26
+llama-cpp-python<0.4,>=0.3
 vllm<0.21,>=0.20
 transformers>=5.5
 accelerate>=1.0

@@ -1,9 +1,95 @@
 from __future__ import annotations
 
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+def test_llama_cpp_chat_uses_first_sorted_gguf_and_chat_completion(tmp_path: Path) -> None:
+    """llama.cpp chat should load the first sorted GGUF file and use native chat completion."""
+    from track.contracts import AiModel, InferenceConfig, Message
+    from track.inference.chat.llama_cpp import LlamaCppChatLLM, LlamaCppRuntime
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    later_file = repo_dir / "z-model.gguf"
+    first_file = repo_dir / "a-model.gguf"
+    later_file.write_bytes(b"gguf")
+    first_file.write_bytes(b"gguf")
+    captured_init: dict[str, object] = {}
+    captured_chat: dict[str, object] = {}
+
+    class FakeLlama:
+        """Capture llama.cpp model construction and chat completion calls."""
+
+        def __init__(self, **kwargs: object) -> None:
+            """Store constructor kwargs for assertion."""
+            captured_init.update(kwargs)
+
+        def create_chat_completion(self, **kwargs: object) -> dict[str, object]:
+            """Return one assistant message for the captured chat completion request."""
+            captured_chat.update(kwargs)
+            return {"choices": [{"message": {"content": "done"}}]}
+
+    runtime = LlamaCppRuntime(llama=FakeLlama)
+    model = AiModel(
+        provider="local",
+        model_id=str(repo_dir),
+        alias="chat",
+        inference_config=InferenceConfig(max_tokens=17, temperature=0.2, top_p=0.8),
+    )
+    chat = LlamaCppChatLLM(model_config=model, runtime=runtime)
+
+    response = chat.chat([Message.system("rules"), Message.user("hello")])
+
+    assert response.text() == "done"
+    assert captured_init["model_path"] == str(first_file)
+    assert captured_init["n_gpu_layers"] == -1
+    assert captured_chat["messages"] == [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "hello"},
+    ]
+    assert captured_chat["max_tokens"] == 17
+    assert captured_chat["temperature"] == 0.2
+    assert captured_chat["top_p"] == 0.8
+
+
+def test_llama_cpp_chat_rejects_unexpected_backend_payloads(tmp_path: Path) -> None:
+    """llama.cpp chat should raise instead of returning repr strings for unsupported payloads."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.llama_cpp import LlamaCppChatLLM, LlamaCppRuntime
+
+    model_file = tmp_path / "model.gguf"
+    model_file.write_bytes(b"gguf")
+    runtime = LlamaCppRuntime(
+        llama=lambda **_kwargs: SimpleNamespace(
+            create_chat_completion=lambda **_chat_kwargs: {"choices": [{"message": {"content": object()}}]}
+        )
+    )
+    model = AiModel(provider="local", model_id=str(model_file), alias="chat")
+    chat = LlamaCppChatLLM(model_config=model, runtime=runtime)
+
+    with pytest.raises(RuntimeError, match="unsupported response payload"):
+        chat.chat([Message.user("hello")])
+
+
+def test_llama_cpp_chat_rejects_non_text_messages(tmp_path: Path) -> None:
+    """llama.cpp chat should reject multimodal content before calling the backend."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.llama_cpp import LlamaCppChatLLM, LlamaCppRuntime
+
+    model_file = tmp_path / "model.gguf"
+    model_file.write_bytes(b"gguf")
+    runtime = LlamaCppRuntime(
+        llama=lambda **_kwargs: SimpleNamespace(create_chat_completion=lambda **_chat_kwargs: {})
+    )
+    model = AiModel(provider="local", model_id=str(model_file), alias="chat")
+    chat = LlamaCppChatLLM(model_config=model, runtime=runtime)
+
+    with pytest.raises(ValueError, match="supports only text content"):
+        chat.chat([Message.user("hello", image_path="/tmp/image.png")])
 
 
 def test_vllm_chat_rejects_unexpected_backend_payloads() -> None:
@@ -12,7 +98,7 @@ def test_vllm_chat_rejects_unexpected_backend_payloads() -> None:
     from track.inference.chat.vllm import VLLMChatLLM, VLLMRuntime
 
     runtime = VLLMRuntime(
-        llm=lambda **_: SimpleNamespace(generate=lambda *_args, **_kwargs: [object()]),
+        llm=lambda **_: SimpleNamespace(chat=lambda *_args, **_kwargs: [object()]),
         sampling_params=lambda **kwargs: kwargs,
     )
     model = AiModel(provider="local", model_id="test/chat", alias="chat")
@@ -20,6 +106,41 @@ def test_vllm_chat_rejects_unexpected_backend_payloads() -> None:
 
     with pytest.raises(RuntimeError, match="unsupported response payload"):
         chat.chat([Message.user("hello")])
+
+
+def test_vllm_chat_uses_native_chat_messages_instead_of_raw_prompt() -> None:
+    """vLLM chat should use tokenizer chat templates instead of a manual Assistant prompt."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.vllm import VLLMChatLLM, VLLMRuntime
+
+    recorded_messages: list[dict[str, str]] = []
+
+    class FakeVLLMModel:
+        """Capture native chat calls and reject raw prompt generation."""
+
+        def chat(self, messages: list[dict[str, str]], *_args: object, **_kwargs: object) -> list[SimpleNamespace]:
+            """Return one assistant response for the captured chat messages."""
+            recorded_messages.extend(messages)
+            return [SimpleNamespace(outputs=[SimpleNamespace(text="done")])]
+
+        def generate(self, *_args: object, **_kwargs: object) -> list[object]:
+            """Fail if the backend falls back to hand-rendered raw prompts."""
+            raise AssertionError("raw prompt generation should not be used for chat")
+
+    runtime = VLLMRuntime(
+        llm=lambda **_kwargs: FakeVLLMModel(),
+        sampling_params=lambda **kwargs: kwargs,
+    )
+    model = AiModel(provider="local", model_id="test/chat", alias="chat")
+    chat = VLLMChatLLM(model_config=model, runtime=runtime)
+
+    response = chat.chat([Message.system("rules"), Message.user("hello")])
+
+    assert response.text() == "done"
+    assert recorded_messages == [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "hello"},
+    ]
 
 
 def test_vllm_chat_disables_trust_remote_code_by_default() -> None:
@@ -311,6 +432,133 @@ def test_diffusers_uses_torch_generator_only_for_explicit_seed() -> None:
     assert first.images[0]["generator"] is None
     assert second.images[0]["generator"] == "seeded:5"
     assert created_generators == [("cuda", 5)]
+
+
+def test_diffusers_enables_cpu_offload_for_configured_device() -> None:
+    """Diffusers CPU offload should target the backend device explicitly."""
+    from track.inference.image.diffusers import DiffusersFluxImageModel
+
+    captured: dict[str, object] = {}
+
+    class FakePipeline:
+        """Capture offload configuration without importing the real diffusers runtime."""
+
+        def enable_model_cpu_offload(self, *, device: str) -> None:
+            """Record the configured offload device."""
+            captured["device"] = device
+
+    class FakeFlux2KleinPipeline:
+        """Provide the diffusers pipeline constructor used by the backend."""
+
+        @staticmethod
+        def from_pretrained(*_args: object, **kwargs: object) -> FakePipeline:
+            """Return a fake pipeline and record load kwargs."""
+            captured["load_kwargs"] = kwargs
+            return FakePipeline()
+
+    import sys
+
+    previous_torch = sys.modules.get("torch")
+    previous_diffusers = sys.modules.get("diffusers")
+    fake_torch = types.ModuleType("torch")
+    setattr(fake_torch, "bfloat16", "bfloat16")
+    fake_diffusers = types.ModuleType("diffusers")
+    setattr(fake_diffusers, "Flux2KleinPipeline", FakeFlux2KleinPipeline)
+    sys.modules["torch"] = fake_torch
+    sys.modules["diffusers"] = fake_diffusers
+    try:
+        model = DiffusersFluxImageModel(model_id="test/image", device="cuda")
+    finally:
+        if previous_torch is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = previous_torch
+        if previous_diffusers is None:
+            sys.modules.pop("diffusers", None)
+        else:
+            sys.modules["diffusers"] = previous_diffusers
+
+    assert model.pipeline is not None
+    assert captured["device"] == "cuda"
+    assert captured["load_kwargs"] == {"torch_dtype": "bfloat16", "cache_dir": None}
+
+
+def test_diffusers_pipeline_runs_under_generation_lock() -> None:
+    """Diffusers generation should serialize access to stateful offload hooks."""
+    from track.inference.image.diffusers import DiffusersFluxImageModel
+
+    model = DiffusersFluxImageModel.__new__(DiffusersFluxImageModel)
+    model.device = "cuda"
+    model.load_error = None
+    model._generation_lock = __import__("threading").Lock()
+
+    def fake_pipeline(**kwargs: object) -> SimpleNamespace:
+        """Assert the pipeline is called while the wrapper lock is held."""
+        acquired = model._generation_lock.acquire(blocking=False)
+        if acquired:
+            model._generation_lock.release()
+        assert acquired is False
+        return SimpleNamespace(images=[kwargs])
+
+    model.pipeline = fake_pipeline
+
+    import sys
+
+    previous_torch = sys.modules.get("torch")
+    fake_torch = types.ModuleType("torch")
+    setattr(fake_torch, "Generator", lambda device: SimpleNamespace(manual_seed=lambda value: value))
+    sys.modules["torch"] = fake_torch
+    try:
+        result = model._run_pipeline(prompt="hello", size=32, steps=4)
+    finally:
+        if previous_torch is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = previous_torch
+
+    assert result.images[0]["prompt"] == "hello"
+
+
+def test_diffusers_unpacks_flux2_packed_step_latents_before_vae_decode() -> None:
+    """Diffusers intermediate decoding should convert FLUX.2 token latents to VAE layout."""
+    from track.inference.image.diffusers import _prepare_vae_decode_latents
+
+    class FakeLatents:
+        """Track tensor-like shape transforms used by the FLUX.2 unpacking path."""
+
+        def __init__(self, shape: tuple[int, ...]) -> None:
+            """Store the current fake tensor shape."""
+            self.shape = shape
+
+        def reshape(self, *shape: int) -> "FakeLatents":
+            """Return a fake tensor with the requested shape."""
+            return FakeLatents(shape)
+
+        def permute(self, *dimensions: int) -> "FakeLatents":
+            """Return a fake tensor with dimensions reordered like PyTorch."""
+            return FakeLatents(tuple(self.shape[dimension] for dimension in dimensions))
+
+    pipe = SimpleNamespace(vae=SimpleNamespace(config={}))
+    latents = FakeLatents((1, 4096, 128))
+
+    decode_latents = _prepare_vae_decode_latents(pipe, latents)
+
+    assert decode_latents.shape == (1, 32, 128, 128)
+
+
+def test_diffusers_rejects_non_square_flux2_packed_step_latents() -> None:
+    """Diffusers intermediate decoding should fail clearly for unexpected packed latent grids."""
+    from track.inference.image.diffusers import _prepare_vae_decode_latents
+
+    class FakeLatents:
+        """Provide only the shape needed to detect packed FLUX.2 latents."""
+
+        shape = (1, 4095, 128)
+
+    pipe = SimpleNamespace(vae=SimpleNamespace(config={}))
+
+    with pytest.raises(ValueError, match="Cannot unpack non-square FLUX.2 latents"):
+        _prepare_vae_decode_latents(pipe, FakeLatents())
 
 
 def test_diffusers_decodes_step_images_with_mapping_vae_config() -> None:

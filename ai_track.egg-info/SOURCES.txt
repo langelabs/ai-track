@@ -53,6 +53,7 @@ track/inference/audio/mlx.py
 track/inference/audio/models.py
 track/inference/audio/transformers.py
 track/inference/chat/__init__.py
+track/inference/chat/llama_cpp.py
 track/inference/chat/mlx.py
 track/inference/chat/models.py
 track/inference/chat/vllm.py

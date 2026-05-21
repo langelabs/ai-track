@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-track"
-version = "0.2.4"
+version = "0.3.0"
 description = "Universal AI runtime for local and remote inference."
 readme = "README.md"
 license = "MIT"
@@ -37,6 +37,7 @@ macos = [
 cuda = [
   "torch>=2.2; sys_platform == 'linux'",
   "torchvision>=0.2.26; sys_platform == 'linux'",
+  "llama-cpp-python>=0.3,<0.4; sys_platform == 'linux'",
   "vllm>=0.20,<0.21; sys_platform == 'linux'",
   "transformers>=5.5; sys_platform == 'linux'",
   "accelerate>=1.0; sys_platform == 'linux'",

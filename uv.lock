@@ -40,7 +40,7 @@ wheels = [
 
 [[package]]
 name = "ai-track"
-version = "0.2.4"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
@@ -56,6 +56,7 @@ dependencies = [
 cuda = [
     { name = "accelerate", marker = "sys_platform == 'linux'" },
     { name = "diffusers", marker = "sys_platform == 'linux'" },
+    { name = "llama-cpp-python", marker = "sys_platform == 'linux'" },
     { name = "torch", marker = "sys_platform == 'linux'" },
     { name = "torchvision", marker = "sys_platform == 'linux'" },
     { name = "transformers", marker = "sys_platform == 'linux'" },
@@ -82,6 +83,7 @@ requires-dist = [
     { name = "accelerate", marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=1.0" },
     { name = "diffusers", marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=0.30" },
     { name = "huggingface-hub", specifier = ">=0.24" },
+    { name = "llama-cpp-python", marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=0.3,<0.4" },
     { name = "mflux", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.5" },
     { name = "mlx", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.24" },
     { name = "mlx-audio", extras = ["tts"], marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=0.4" },
@@ -1599,6 +1601,19 @@ sdist = { url = "https://files.pythonhosted.org/packages/af/60/bc7622aefb2aee1c0
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2d/00/d90b10b962b4277f5e64a78b6609968859ff86889f5b898c1a778c06ec00/lark-1.2.2-py3-none-any.whl", hash = "sha256:c2276486b02f0f1b90be155f2c8ba4a8e194d42775786db622faccd652d8e80c", size = 111036, upload-time = "2024-08-13T19:48:58.603Z" },
 ]
+
+[[package]]
+name = "llama-cpp-python"
+version = "0.3.23"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "diskcache", marker = "sys_platform == 'linux'" },
+    { name = "jinja2", marker = "sys_platform == 'linux'" },
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13' and sys_platform == 'linux'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/61/fb/3932d67b89eb7d8f451719b40b67034e031e04b8b598a7f65d13e255ebfb/llama_cpp_python-0.3.23.tar.gz", hash = "sha256:85493cd887b543588941e8704640fef6a54c057443292e527559c30728375ffd", size = 68300621, upload-time = "2026-05-11T10:12:21.665Z" }
 
 [[package]]
 name = "llguidance"

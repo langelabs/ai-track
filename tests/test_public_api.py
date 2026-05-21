@@ -21,6 +21,12 @@ def test_inference_package_exposes_runtime_building_blocks() -> None:
     assert not hasattr(inference, "ModelRouter")
 
 
+def test_chat_package_exports_llama_cpp_backend() -> None:
+    from track.inference import chat
+
+    assert hasattr(chat, "LlamaCppChatLLM")
+
+
 def test_hub_package_exposes_only_canonical_name() -> None:
     from track import hub
 

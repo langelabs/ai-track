@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-def test_chat_factory_uses_cuda_backend() -> None:
+def test_chat_factory_prefers_llama_cpp_for_cuda_backend() -> None:
     from track.contracts import AiModel
     from track.inference.chat.models import create_chat_model
 
@@ -15,11 +15,70 @@ def test_chat_factory_uses_cuda_backend() -> None:
     )
 
     sentinel = SimpleNamespace(backend_name="cuda-chat")
-    with patch("track.inference.chat.vllm.VLLMChatLLM", return_value=sentinel) as factory:
+    with patch("track.inference.chat.llama_cpp.LlamaCppChatLLM", return_value=sentinel) as factory:
         result = create_chat_model("cuda", config)
 
     factory.assert_called_once()
     assert result is sentinel
+
+
+def test_chat_factory_falls_back_to_vllm_when_llama_cpp_cannot_load() -> None:
+    from track.contracts import AiModel
+    from track.inference.chat.models import create_chat_model
+
+    config = AiModel(
+        provider="local",
+        model_id="cuda/chat",
+        alias="chat",
+    )
+
+    llama_cpp_backend = SimpleNamespace(load_error=RuntimeError("no gguf file"))
+    vllm_backend = SimpleNamespace(backend_name="cuda-vllm")
+
+    with patch(
+        "track.inference.chat.llama_cpp.LlamaCppChatLLM",
+        return_value=llama_cpp_backend,
+    ) as llama_cpp_factory, patch(
+        "track.inference.chat.vllm.VLLMChatLLM",
+        return_value=vllm_backend,
+    ) as vllm_factory:
+        result = create_chat_model("cuda", config)
+
+    llama_cpp_factory.assert_called_once()
+    vllm_factory.assert_called_once()
+    assert result is vllm_backend
+
+
+def test_chat_factory_checks_vllm_compiler_only_for_fallback() -> None:
+    from track.contracts import AiModel
+    from track.inference.chat.models import create_chat_model
+    from track.utils._cuda import CudaHostCompilerProbe
+
+    config = AiModel(
+        provider="local",
+        model_id="cuda/chat",
+        alias="chat",
+    )
+    missing_compiler = CudaHostCompilerProbe(
+        compiler_available=False,
+        diagnostic_reason="CUDA vLLM requires a host C compiler for Triton/Torch Inductor.",
+    )
+
+    with patch(
+        "track.inference.chat.llama_cpp.LlamaCppChatLLM",
+        return_value=SimpleNamespace(load_error=RuntimeError("no gguf file")),
+    ), patch(
+        "track.inference.chat.models.probe_cuda_host_compiler",
+        return_value=missing_compiler,
+    ), patch("track.inference.chat.vllm.VLLMChatLLM") as vllm_factory:
+        try:
+            create_chat_model("cuda", config)
+        except RuntimeError as exc:
+            assert "requires a host C compiler" in str(exc)
+        else:
+            raise AssertionError("missing vLLM compiler should block vLLM fallback")
+
+    vllm_factory.assert_not_called()
 
 
 def test_audio_factory_uses_cuda_backend() -> None:

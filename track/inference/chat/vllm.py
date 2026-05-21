@@ -36,21 +36,14 @@ def _load_vllm_runtime() -> VLLMRuntime:
     return VLLMRuntime(llm=LLM, sampling_params=SamplingParams)
 
 
-def _render_vllm_prompt(messages: list[Message]) -> str:
-    """Render strict text messages into a single prompt string."""
-    prompt_lines: list[str] = []
+def _render_vllm_chat_messages(messages: list[Message]) -> list[dict[str, str]]:
+    """Render strict text messages into the structure expected by vLLM chat."""
+    chat_messages: list[dict[str, str]] = []
     for message in messages:
         if any(not isinstance(part, TextContentPart) for part in message.content):
             raise ValueError("The vLLM backend supports only text content in chat messages.")
-        text = message.text()
-        if message.role == "system":
-            prompt_lines.append(f"System: {text}")
-        elif message.role == "assistant":
-            prompt_lines.append(f"Assistant: {text}")
-        else:
-            prompt_lines.append(f"User: {text}")
-    prompt_lines.append("Assistant:")
-    return "\n".join(prompt_lines)
+        chat_messages.append({"role": message.role, "content": message.text()})
+    return chat_messages
 
 
 def _wrap_vllm_load_error(model_id: str, error: Exception) -> RuntimeError:
@@ -154,9 +147,9 @@ class VLLMChatLLM(BaseChatLLM):
             raise RuntimeError("vLLM chat is not available in the current environment.") from self.load_error
         return self.model
 
-    def _build_prompt(self, messages: list[Message]) -> str:
-        """Render chat messages into the prompt format used by vLLM."""
-        return _render_vllm_prompt(messages)
+    def _build_messages(self, messages: list[Message]) -> list[dict[str, str]]:
+        """Render chat messages into the native vLLM chat format."""
+        return _render_vllm_chat_messages(messages)
 
     def _build_sampling_params(self) -> Any:
         """Build vLLM sampling parameters from the configured inference settings."""
@@ -186,8 +179,11 @@ class VLLMChatLLM(BaseChatLLM):
     def chat(self, messages: list[Message]) -> Message:
         """Generate an assistant response from validated chat messages."""
         model = self._require_model()
-        prompt = self._build_prompt(messages)
-        result = model.generate([prompt], self._build_sampling_params())
+        chat_messages = self._build_messages(messages)
+        result = model.chat(
+            messages=chat_messages,
+            sampling_params=self._build_sampling_params(),
+        )
         generated_text = self._extract_text(result).strip()
         return Message.assistant(generated_text)
 

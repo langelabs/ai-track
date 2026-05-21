@@ -32,7 +32,7 @@ from track.inference.embedding import create_embedding_model
 from track.inference.image.models import create_image_generation_model
 from track.inference.transcription import create_transcription_model
 from track.inference.transcription.models import TranscriptionModelConfig
-from track.utils._cuda import TorchCudaProbe, probe_cuda_host_compiler, probe_torch_cuda
+from track.utils._cuda import TorchCudaProbe, probe_torch_cuda
 from track.utils import (
     configured_local_model_ids,
     download_local_model_artifact,
@@ -193,27 +193,9 @@ class LocalRuntime(SupportsOpenAICompatibility):
             '`python -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available())"`.'
         )
 
-    def _preflight_cuda_chat_backend(self) -> RuntimeError | None:
-        """Return a CUDA chat preflight error before vLLM starts expensive initialization."""
-        if self.backend != "cuda":
-            return None
-        compiler_probe = probe_cuda_host_compiler()
-        if compiler_probe.compiler_available:
-            return None
-        return RuntimeError(
-            compiler_probe.diagnostic_reason
-            or "CUDA vLLM requires a host C compiler for Triton/Torch Inductor."
-        )
-
     def preflight_required_components(self) -> None:
-        """Raise early when a required component cannot load in the current environment."""
-        if "chat" not in self._required_components:
-            return
-        preflight_error = self._preflight_cuda_chat_backend()
-        if preflight_error is None:
-            return
-        self._note_component_load_error("chat", preflight_error)
-        raise preflight_error
+        """Run lightweight required-component checks before downloading artifacts."""
+        pass
 
     def _component_backend(self, component_name: LocalRuntimeComponent) -> object | None:
         """Return the instantiated backend object for one runtime component."""
@@ -404,10 +386,6 @@ class LocalRuntime(SupportsOpenAICompatibility):
             if self.chat_llm is not None:
                 return
             try:
-                preflight_error = self._preflight_cuda_chat_backend()
-                if preflight_error is not None:
-                    self._note_component_load_error("chat", preflight_error)
-                    return
                 self.ensure_model_artifact_downloaded(self.chat_config.model_id)
                 self.chat_llm = create_chat_model(
                     self.backend,

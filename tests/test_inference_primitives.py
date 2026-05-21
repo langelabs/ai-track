@@ -111,6 +111,7 @@ def test_audio_and_message_helpers_are_available_from_utils() -> None:
 
 def test_chat_backends_coalesce_nullable_inference_config_fields() -> None:
     from track.contracts import AiModel, InferenceConfig
+    from track.inference.chat.llama_cpp import LlamaCppChatLLM, LlamaCppRuntime
     from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
     from track.inference.chat.vllm import VLLMChatLLM, VLLMRuntime
 
@@ -136,6 +137,19 @@ def test_chat_backends_coalesce_nullable_inference_config_fields() -> None:
     assert mlx_chat.generation_config.temperature == 0.0
     assert mlx_chat.generation_config.top_p == 1.0
     assert mlx_chat.generation_config.verbose is False
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model_file = Path(tmpdir) / "model.gguf"
+        model_file.write_bytes(b"gguf")
+        llama_cpp_runtime = LlamaCppRuntime(
+            llama=lambda **_kwargs: SimpleNamespace(create_chat_completion=lambda **_chat_kwargs: {})
+        )
+        llama_cpp_model = model.model_copy(update={"model_id": str(model_file)})
+        llama_cpp_chat = LlamaCppChatLLM(model_config=llama_cpp_model, runtime=llama_cpp_runtime)
+    assert llama_cpp_chat.generation_config.max_tokens == 256
+    assert llama_cpp_chat.generation_config.temperature == 0.0
+    assert llama_cpp_chat.generation_config.top_p == 1.0
+    assert llama_cpp_chat.generation_config.verbose is False
 
     vllm_runtime = VLLMRuntime(
         llm=lambda **_kwargs: SimpleNamespace(generate=lambda *_a, **_k: []),

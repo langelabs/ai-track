@@ -16,6 +16,13 @@ else:
     __all__.append("MLXChatLLM")
 
 try:
+    from .llama_cpp import LlamaCppChatLLM  # noqa: F401
+except ModuleNotFoundError:
+    pass
+else:
+    __all__.append("LlamaCppChatLLM")
+
+try:
     from .vllm import VLLMChatLLM  # noqa: F401
 except ModuleNotFoundError:
     pass

@@ -11,7 +11,7 @@ code can stay backend-agnostic.
 
 - Routes requests through local or remote inference automatically.
 - Supports macOS MLX backends for on-device inference.
-- Supports CUDA backends for GPU inference with vLLM and Hugging Face models.
+- Supports CUDA backends for GPU inference with llama.cpp, vLLM, and Hugging Face models.
 - Falls back to a remote OpenAI-compatible client when no local backend fits.
 - Exposes a familiar client surface for chat, embeddings, images, audio, and
   transcription.
@@ -227,12 +227,29 @@ For `pip`:
 pip install "ai-track[cuda]"
 ```
 
-The CUDA extra brings in the GPU-oriented runtime stack, including vLLM,
-Transformers, Diffusers, and PyTorch-based helpers.
+The CUDA extra brings in the GPU-oriented runtime stack, including
+llama-cpp-python for GGUF chat models, vLLM as a fallback for compatible
+Hugging Face transformer checkpoints, Transformers, Diffusers, and
+PyTorch-based helpers.
 
-`ai-track` validates CUDA support against the pinned `vllm` 0.20.x minor line.
-Future `vllm` releases are not treated as automatically compatible just because
-they satisfy an open-ended lower bound.
+For llama.cpp CUDA acceleration, install from source with:
+
+```bash
+CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+```
+
+Prebuilt llama-cpp-python CUDA wheels are also available for CUDA 12.1 through
+12.5 through the upstream wheel index, for example:
+
+```bash
+pip install llama-cpp-python \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu125
+```
+
+See the upstream
+[llama-cpp-python installation docs](https://llama-cpp-python.readthedocs.io/en/latest/)
+for the current CUDA wheel matrix and build flags. vLLM remains pinned to the
+0.20.x minor line for fallback compatibility.
 
 For local embedding-only models, declare explicit capabilities so downstream
 apps do not register unrelated modalities and accidentally boot unused CUDA
