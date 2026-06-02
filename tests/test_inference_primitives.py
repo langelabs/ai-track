@@ -162,6 +162,230 @@ def test_chat_backends_coalesce_nullable_inference_config_fields() -> None:
     assert vllm_chat.generation_config.verbose is False
 
 
+def test_mlx_chat_multimodal_prompt_uses_single_pass_prefill() -> None:
+    """MLX-VLM multimodal generation should avoid chunked prefill when token count is known."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeTokenizer:
+        model_max_length = 8192
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return a long prompt token sequence."""
+            return list(range(5293))
+
+    def fake_generate(*_args: object, prefill_step_size: int | None = None, **kwargs: object) -> SimpleNamespace:
+        """Record generation kwargs for the assertion."""
+        captured_kwargs.update(kwargs)
+        captured_kwargs["prefill_step_size"] = prefill_step_size
+        return SimpleNamespace(text="ok")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    text_config=SimpleNamespace(hidden_size_per_layer_input=256),
+                )
+            ),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=fake_generate,
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/generic-vlm", alias="chat"),
+        runtime=runtime,
+    )
+
+    assert chat.chat([Message.user("describe", image_path="/tmp/image.png")]).text() == "ok"
+    assert captured_kwargs["prefill_step_size"] == 5293
+
+
+def test_mlx_chat_prefill_is_general_for_non_gemma_multimodal_models() -> None:
+    """Generic multimodal configs should receive single-pass prefill without Gemma-only name checks."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeTokenizer:
+        model_max_length = 4096
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return a token sequence for a non-Gemma multimodal model."""
+            return [1, 2, 3]
+
+    def fake_generate(*_args: object, prefill_step_size: int | None = None, **kwargs: object) -> SimpleNamespace:
+        """Record generation kwargs for the assertion."""
+        captured_kwargs.update(kwargs)
+        captured_kwargs["prefill_step_size"] = prefill_step_size
+        return SimpleNamespace(text="ok")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(config=SimpleNamespace(model_type="not_gemma", image_token_id=12345)),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=fake_generate,
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/not-gemma-vlm", alias="chat"),
+        runtime=runtime,
+    )
+
+    assert chat.chat([Message.user("describe", image_path="/tmp/image.png")]).text() == "ok"
+    assert captured_kwargs["prefill_step_size"] == 3
+
+
+def test_mlx_chat_text_only_does_not_force_prefill() -> None:
+    """Text-only MLX chat calls should keep the existing generation kwargs."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeTokenizer:
+        model_max_length = 4096
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return a known token count."""
+            return [1, 2, 3]
+
+    def fake_generate(*_args: object, **kwargs: object) -> SimpleNamespace:
+        """Record generation kwargs for the assertion."""
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(text="ok")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(config=SimpleNamespace(image_token_id=12345)),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=fake_generate,
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/text", alias="chat"),
+        runtime=runtime,
+    )
+
+    assert chat.chat([Message.user("hello")]).text() == "ok"
+    assert "prefill_step_size" not in captured_kwargs
+
+
+def test_mlx_chat_callable_without_prefill_support_still_runs() -> None:
+    """Older MLX-VLM generate callables should not receive unsupported prefill kwargs."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeTokenizer:
+        model_max_length = 4096
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return a known token count."""
+            return [1, 2, 3]
+
+    def fake_generate(
+        _model: object,
+        _processor: object,
+        _prompt: object,
+        *,
+        image: object,
+        audio: object,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        verbose: bool,
+    ) -> SimpleNamespace:
+        """Record generation kwargs without accepting prefill_step_size."""
+        captured_kwargs.update(
+            {
+                "image": image,
+                "audio": audio,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+                "verbose": verbose,
+            }
+        )
+        return SimpleNamespace(text="ok")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(config=SimpleNamespace(image_token_id=12345)),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=fake_generate,
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/old-vlm", alias="chat"),
+        runtime=runtime,
+    )
+
+    assert chat.chat([Message.user("describe", image_path="/tmp/image.png")]).text() == "ok"
+    assert "prefill_step_size" not in captured_kwargs
+
+
+def test_mlx_chat_rejects_multimodal_prompt_over_context_limit() -> None:
+    """Provably oversized MLX-VLM multimodal prompts should fail before generation."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    class FakeTokenizer:
+        model_max_length = 4
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return a token sequence larger than the context limit."""
+            return [1, 2, 3, 4, 5]
+
+    def fake_generate(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        """Fail if generation is called after preflight rejection."""
+        raise AssertionError("generate should not be called")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(config=SimpleNamespace(max_position_embeddings=4)),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=fake_generate,
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/limited-vlm", alias="chat"),
+        runtime=runtime,
+    )
+
+    with pytest.raises(RuntimeError, match="exceeds the detected context limit"):
+        chat.chat([Message.user("describe", image_path="/tmp/image.png")])
+
+
+def test_mlx_chat_unknown_token_metadata_does_not_block_generation() -> None:
+    """Missing token metadata should not trigger heuristic prompt rejection."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(config=SimpleNamespace(max_position_embeddings=4)),
+            SimpleNamespace(),
+        ),
+        generate=lambda *_args, **_kwargs: SimpleNamespace(text="ok"),
+        apply_chat_template=lambda **_kwargs: "very long text that is not counted by characters",
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/unknown-vlm", alias="chat"),
+        runtime=runtime,
+    )
+
+    assert chat.chat([Message.user("describe", image_path="/tmp/image.png")]).text() == "ok"
+
+
 def test_mlx_embedding_fallback_error_is_actionable() -> None:
     from track.inference.embedding.mlx import MLXEmbeddingModel
 

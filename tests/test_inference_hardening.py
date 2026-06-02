@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -235,6 +235,95 @@ def test_mlx_chat_surfaces_actionable_circular_import_error(monkeypatch: pytest.
         RuntimeError,
         match="circular import inside the installed mlx_vlm package",
     ):
+        chat.chat([Message.user("hello")])
+
+
+def test_mlx_chat_wraps_multimodal_broadcast_shape_failures() -> None:
+    """MLX-VLM broadcast shape errors should become actionable Track errors."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    class FakeTokenizer:
+        model_max_length = 8192
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return the representative prompt length from the handoff."""
+            return list(range(5293))
+
+    def fake_generate(*_args: object, **_kwargs: object) -> object:
+        """Raise the low-level broadcast failure reported by MLX-VLM."""
+        raise ValueError("[broadcast_shapes] Shapes (1,2048,42,256) and (1,5293,42,256) cannot be broadcast.")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(config=SimpleNamespace(hidden_size_per_layer_input=256)),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=fake_generate,
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/generic-vlm", alias="chat"),
+        runtime=runtime,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot align the rendered multimodal prompt"):
+        chat.chat([Message.user("describe", image_path="/tmp/image.png")])
+
+
+def test_mlx_chat_stream_wraps_multimodal_broadcast_shape_failures() -> None:
+    """Streaming MLX-VLM broadcast errors should be wrapped during iteration."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    class FakeTokenizer:
+        model_max_length = 8192
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return a known prompt token count."""
+            return [1, 2, 3]
+
+    def fake_stream_generate(*_args: object, **_kwargs: object) -> Iterator[object]:
+        """Raise the low-level broadcast failure while streaming."""
+        yield SimpleNamespace(text="partial")
+        raise ValueError("[broadcast_shapes] Shapes (1,2,3) and (1,4,3) cannot be broadcast.")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(config=SimpleNamespace(image_token_id=12345)),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=lambda *_args, **_kwargs: SimpleNamespace(text="unused"),
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+        stream_generate=fake_stream_generate,
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/stream-vlm", alias="chat"),
+        runtime=runtime,
+    )
+
+    stream = chat.stream_chat([Message.user("describe", image_path="/tmp/image.png")])
+    assert next(stream) == "partial"
+    with pytest.raises(RuntimeError, match="cannot align the rendered multimodal prompt"):
+        next(stream)
+
+
+def test_mlx_chat_leaves_unrelated_value_errors_unwrapped() -> None:
+    """Unrelated MLX chat errors should keep their original exception type and message."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (SimpleNamespace(), SimpleNamespace()),
+        generate=lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("different failure")),
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/text", alias="chat"),
+        runtime=runtime,
+    )
+
+    with pytest.raises(ValueError, match="different failure"):
         chat.chat([Message.user("hello")])
 
 
