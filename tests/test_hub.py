@@ -51,7 +51,7 @@ def test_hub_routes_local_models_to_local_provider() -> None:
     assert provider.model.model_id == "mlx-community/test"
 
 
-def test_hub_serializes_local_runtime_calls_across_models() -> None:
+def test_hub_serializes_local_runtime_calls_across_models(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure local inference calls through one hub do not overlap."""
     from collections.abc import Iterator
 
@@ -59,6 +59,8 @@ def test_hub_serializes_local_runtime_calls_across_models() -> None:
     from track.hub import AiHub
     from track.inference.openai import Client
     from track.providers import LocalProvider
+
+    monkeypatch.setattr("track.inference._runtime._detect_backend_with_probe", lambda: (None, None))
 
     state_lock = threading.Lock()
     active_calls = 0
@@ -148,7 +150,7 @@ def test_hub_serializes_local_runtime_calls_across_models() -> None:
     assert max_active_calls == 1
 
 
-def test_hub_serializes_streaming_local_runtime_calls_until_consumed() -> None:
+def test_hub_serializes_streaming_local_runtime_calls_until_consumed(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure streamed local inference keeps the hub operation guard while consumed."""
     from collections.abc import Iterator
 
@@ -156,6 +158,8 @@ def test_hub_serializes_streaming_local_runtime_calls_until_consumed() -> None:
     from track.hub import AiHub
     from track.inference.openai import Client
     from track.providers import LocalProvider
+
+    monkeypatch.setattr("track.inference._runtime._detect_backend_with_probe", lambda: (None, None))
 
     stream_entered = threading.Event()
     release_stream = threading.Event()

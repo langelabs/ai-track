@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from threading import Lock, RLock
-from typing import Literal
+from typing import Literal, cast
 
 from track.contracts import (
     AiModel,
@@ -102,7 +102,8 @@ def _components_for_capability(capability: LocalModelCapability) -> tuple[LocalR
 def _coerce_embedding_batch_rows(embeddings: list[list[float]] | list[float], expected_rows: int) -> list[list[float]]:
     """Normalize backend embedding output for one list-input batch."""
     if expected_rows == 1 and embeddings and not isinstance(embeddings[0], list):
-        return [[float(value) for value in embeddings]]
+        scalar_embedding = cast(list[float], embeddings)
+        return [[float(value) for value in scalar_embedding]]
     if not isinstance(embeddings, list):
         raise RuntimeError("Embedding backend returned an unsupported response shape.")
     rows: list[list[float]] = []
@@ -279,6 +280,14 @@ class LocalRuntime(SupportsOpenAICompatibility):
         with self._download_progress_lock:
             return self._download_progress.get(model_id)
 
+    def _use_loaded_component_if_available(self, component_name: LocalRuntimeComponent) -> bool:
+        """Return whether an already injected component can satisfy a lazy-load request."""
+        component = self._component_backend(component_name)
+        if component is None:
+            return False
+        self._note_component_load_error(component_name, self._loaded_component_error(component))
+        return True
+
     def is_model_artifact_cached(self, model_id: str) -> bool:
         """Return whether the artifact directory for ``model_id`` exists under ``model_path``."""
         return is_model_artifact_cached(model_id, self.model_path)
@@ -310,11 +319,13 @@ class LocalRuntime(SupportsOpenAICompatibility):
         """Resolve artifacts and construct the embedding backend when configured."""
         if self.embedding_config is None:
             return
+        if self._use_loaded_component_if_available("embedding"):
+            return
         if self.backend is None:
             self._note_component_load_error("embedding", self._missing_backend_error("embedding"))
             return
         with self._load_lock:
-            if self.embedding_model is not None:
+            if self._use_loaded_component_if_available("embedding"):
                 return
             try:
                 self.ensure_model_artifact_downloaded(self.embedding_config.model_id)
@@ -339,10 +350,14 @@ class LocalRuntime(SupportsOpenAICompatibility):
         """Resolve artifacts and construct the image backend when configured."""
         if self.image_generation_config is None:
             return
+        if self._use_loaded_component_if_available("image"):
+            return
         if self.backend is None:
             self._note_component_load_error("image", self._missing_backend_error("image"))
             return
         with self._load_lock:
+            if self._use_loaded_component_if_available("image"):
+                return
             if self._image_load_attempted:
                 return
             self._image_load_attempted = True
@@ -365,11 +380,13 @@ class LocalRuntime(SupportsOpenAICompatibility):
         """Resolve artifacts and construct the audio backend when configured."""
         if self.audio_config is None:
             return
+        if self._use_loaded_component_if_available("audio"):
+            return
         if self.backend is None:
             self._note_component_load_error("audio", self._missing_backend_error("audio"))
             return
         with self._load_lock:
-            if self.audio_model is not None:
+            if self._use_loaded_component_if_available("audio"):
                 return
             try:
                 self.ensure_model_artifact_downloaded(self.audio_config.model_id)
@@ -389,11 +406,13 @@ class LocalRuntime(SupportsOpenAICompatibility):
         """Resolve artifacts and construct the transcription backend when configured."""
         if self.transcription_config is None:
             return
+        if self._use_loaded_component_if_available("transcription"):
+            return
         if self.backend is None:
             self._note_component_load_error("transcription", self._missing_backend_error("transcription"))
             return
         with self._load_lock:
-            if self.transcription_model is not None:
+            if self._use_loaded_component_if_available("transcription"):
                 return
             try:
                 self.ensure_model_artifact_downloaded(self.transcription_config.model_id)
@@ -413,11 +432,13 @@ class LocalRuntime(SupportsOpenAICompatibility):
         """Resolve artifacts and construct the chat backend when configured."""
         if self.chat_config is None:
             return
+        if self._use_loaded_component_if_available("chat"):
+            return
         if self.backend is None:
             self._note_component_load_error("chat", self._missing_backend_error("chat"))
             return
         with self._load_lock:
-            if self.chat_llm is not None:
+            if self._use_loaded_component_if_available("chat"):
                 return
             try:
                 self.ensure_model_artifact_downloaded(self.chat_config.model_id)
