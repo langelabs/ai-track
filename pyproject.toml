@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-track"
-version = "0.4.0"
+version = "0.4.1"
 description = "Universal AI runtime for local and remote inference."
 readme = "README.md"
 license = "MIT"

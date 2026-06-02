@@ -1,4 +1,5 @@
 [![CI](https://github.com/langelabs/ai-track/actions/workflows/ci.yml/badge.svg)](https://github.com/langelabs/ai-track/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ai-track?label=pip)](https://pypi.org/project/ai-track)
 
 ![ai-track logo](https://raw.githubusercontent.com/langelabs/ai-track/main/assets/logo_light.png)
 
