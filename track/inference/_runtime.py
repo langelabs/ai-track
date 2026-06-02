@@ -43,6 +43,7 @@ from track.utils import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_EMBEDDING_BATCH_SIZE = 8
 LocalRuntimeComponent = Literal["embedding", "image", "audio", "transcription", "chat"]
 LocalModelCapability = Literal[
     "text_input",
@@ -96,6 +97,24 @@ def _components_for_capability(capability: LocalModelCapability) -> tuple[LocalR
     if capability == "audio_input":
         return ("chat", "transcription")
     raise ValueError(f"Unsupported local model capability: {capability}")
+
+
+def _coerce_embedding_batch_rows(embeddings: list[list[float]] | list[float], expected_rows: int) -> list[list[float]]:
+    """Normalize backend embedding output for one list-input batch."""
+    if expected_rows == 1 and embeddings and not isinstance(embeddings[0], list):
+        return [[float(value) for value in embeddings]]
+    if not isinstance(embeddings, list):
+        raise RuntimeError("Embedding backend returned an unsupported response shape.")
+    rows: list[list[float]] = []
+    for row in embeddings:
+        if not isinstance(row, list):
+            raise RuntimeError("Embedding backend returned an unsupported response shape.")
+        rows.append([float(value) for value in row])
+    if len(rows) != expected_rows:
+        raise RuntimeError(
+            f"Embedding backend returned {len(rows)} rows for a batch of {expected_rows} input texts."
+        )
+    return rows
 
 
 def _detect_backend_with_probe() -> tuple[Literal["cuda", "mlx"] | None, TorchCudaProbe | None]:
@@ -234,6 +253,18 @@ class LocalRuntime(SupportsOpenAICompatibility):
             if error is not None:
                 return error
         return None
+
+    def _embedding_batch_size(self) -> int:
+        """Return the configured embedding batch size or the local default."""
+        inference_config = self.model.inference_config
+        batch_size = (
+            inference_config.embedding_batch_size
+            if inference_config is not None and inference_config.embedding_batch_size is not None
+            else DEFAULT_EMBEDDING_BATCH_SIZE
+        )
+        if batch_size < 1:
+            raise RuntimeError("embedding_batch_size must be greater than 0.")
+        return batch_size
 
     def _note_model_download_progress(self, model_id: str, value: float | None) -> None:
         """Record or clear live download percentage for one model id."""
@@ -505,7 +536,16 @@ class LocalRuntime(SupportsOpenAICompatibility):
     def embed(self, content: str | list[str]) -> list[list[float]] | list[float]:
         """Generate embeddings for one string or a batch of strings."""
         with self._operation_lock:
-            return self._require_embedding_model().embed(content)
+            embedding_model = self._require_embedding_model()
+            if isinstance(content, str):
+                return embedding_model.embed(content)
+            batch_size = self._embedding_batch_size()
+            embedding_rows: list[list[float]] = []
+            for start_index in range(0, len(content), batch_size):
+                batch = content[start_index:start_index + batch_size]
+                batch_embeddings = embedding_model.embed(batch)
+                embedding_rows.extend(_coerce_embedding_batch_rows(batch_embeddings, len(batch)))
+            return embedding_rows
 
     def chat(self, messages: list[Message]) -> Message:
         """Delegate chat generation to the selected backend."""

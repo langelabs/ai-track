@@ -126,6 +126,111 @@ def test_local_provider_loads_and_exposes_openai_client() -> None:
     assert hasattr(client, "chat")
 
 
+def test_local_runtime_batches_embedding_list_input_by_default() -> None:
+    """Embedding list input should be chunked to avoid oversized backend batches."""
+    from track.contracts import AiModel, BaseEmbeddingModel
+    from track.providers import LocalProvider
+
+    class FakeEmbeddingBackend(BaseEmbeddingModel):
+        """Record embedding batch sizes and return ordered fake vectors."""
+
+        backend_name = "fake"
+
+        def __init__(self) -> None:
+            """Prepare call recording."""
+            self.calls: list[list[str]] = []
+
+        def embed(self, content: str | list[str]) -> list[list[float]] | list[float]:
+            """Return one vector per input text."""
+            if isinstance(content, str):
+                return [float(len(content))]
+            self.calls.append(content)
+            return [[float(index)] for index, _text in enumerate(content, start=len(self.calls) * 100)]
+
+    model = AiModel(provider="local", model_id="cuda/test-embedding", alias="embedding")
+    provider = LocalProvider(model=model, model_path=None, backend="cuda")
+    backend = FakeEmbeddingBackend()
+    provider._runtime.embedding_model = backend
+
+    result = provider._runtime.embed([f"text-{index}" for index in range(20)])
+
+    assert [len(call) for call in backend.calls] == [8, 8, 4]
+    assert result == [[100.0], [101.0], [102.0], [103.0], [104.0], [105.0], [106.0], [107.0],
+                      [200.0], [201.0], [202.0], [203.0], [204.0], [205.0], [206.0], [207.0],
+                      [300.0], [301.0], [302.0], [303.0]]
+
+
+def test_local_runtime_uses_configured_embedding_batch_size() -> None:
+    """Embedding batching should honor the model-level inference configuration."""
+    from track.contracts import AiModel, BaseEmbeddingModel, InferenceConfig
+    from track.providers import LocalProvider
+
+    class FakeEmbeddingBackend(BaseEmbeddingModel):
+        """Record configured embedding chunks."""
+
+        backend_name = "fake"
+
+        def __init__(self) -> None:
+            """Prepare call recording."""
+            self.calls: list[list[str]] = []
+
+        def embed(self, content: str | list[str]) -> list[list[float]] | list[float]:
+            """Return one vector per input text."""
+            if isinstance(content, str):
+                return [1.0]
+            self.calls.append(content)
+            return [[float(len(self.calls))] for _text in content]
+
+    model = AiModel(
+        provider="local",
+        model_id="cuda/test-embedding",
+        alias="embedding",
+        inference_config=InferenceConfig(embedding_batch_size=3),
+    )
+    provider = LocalProvider(model=model, model_path=None, backend="cuda")
+    backend = FakeEmbeddingBackend()
+    provider._runtime.embedding_model = backend
+
+    assert provider._runtime.embed(["a", "b", "c", "d", "e", "f", "g"]) == [
+        [1.0],
+        [1.0],
+        [1.0],
+        [2.0],
+        [2.0],
+        [2.0],
+        [3.0],
+    ]
+    assert [len(call) for call in backend.calls] == [3, 3, 1]
+
+
+def test_local_runtime_rejects_invalid_embedding_batch_size() -> None:
+    """Embedding batching should reject non-positive model configuration values."""
+    from track.contracts import AiModel, BaseEmbeddingModel, InferenceConfig
+    from track.providers import LocalProvider
+
+    class FakeEmbeddingBackend(BaseEmbeddingModel):
+        """Provide an embedding backend that should not be reached."""
+
+        backend_name = "fake"
+
+        def embed(self, content: str | list[str]) -> list[list[float]] | list[float]:
+            """Return a placeholder embedding."""
+            del content
+            return [[1.0]]
+
+    model = AiModel(
+        provider="local",
+        model_id="cuda/test-embedding",
+        alias="embedding",
+        inference_config=InferenceConfig(embedding_batch_size=0),
+    )
+    provider = LocalProvider(model=model, model_path=None, backend="cuda")
+    provider._runtime.embedding_model = FakeEmbeddingBackend()
+
+    with pytest.raises(RuntimeError, match="embedding_batch_size must be greater than 0"):
+        provider._runtime.embed(["hello"])
+
+
 def test_local_provider_download_and_load_toggle_state() -> None:
     """Provider state should flip only after successful download and load calls."""
     from track.contracts import AiModel

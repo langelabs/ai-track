@@ -10,6 +10,9 @@ from track.contracts import BaseEmbeddingModel
 from track.utils.model_storage import resolve_model_location
 from track.utils.runtime import build_missing_optional_dependency_loader
 
+_MAX_SAFE_MLX_EMBEDDING_ELEMENTS = 10_000_000
+_MAX_SAFE_MLX_EMBEDDING_BYTES = 512 * 1024 * 1024
+
 
 @dataclass(frozen=True, slots=True)
 class MLXEmbeddingRuntime:
@@ -89,6 +92,36 @@ def _to_embedding_rows(rows: Any) -> list[list[float]]:
             raise RuntimeError("MLX model returned embeddings in an unsupported shape.")
         normalized_rows.append([float(value) for value in row])
     return normalized_rows
+
+
+def _array_shape(value: Any) -> tuple[int, ...] | None:
+    """Return tensor-like shape metadata as integers when available."""
+    shape = getattr(value, "shape", None)
+    if shape is None:
+        return None
+    try:
+        return tuple(int(dimension) for dimension in shape)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_shape(shape: tuple[int, ...] | None) -> str:
+    """Return a readable shape label for diagnostics."""
+    return "unknown" if shape is None else str(shape)
+
+
+def _product(values: tuple[int, ...]) -> int:
+    """Return the product of shape dimensions."""
+    result = 1
+    for value in values:
+        result *= value
+    return result
+
+
+def _is_metal_allocation_error(error: Exception) -> bool:
+    """Return whether an exception is a known MLX Metal allocation failure."""
+    message = str(error)
+    return "[metal::malloc]" in message or "maximum allowed buffer size" in message
 
 
 class MLXEmbeddingModel(BaseEmbeddingModel):
@@ -177,10 +210,75 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
         attention_mask = [[1] * len(row) + [0] * (max_length - len(row)) for row in token_rows]
         return padded_rows, attention_mask
 
-    def _array_to_data(self, value: Any, to_float32: Callable[..., Any]) -> Any:
-        """Convert tensor-like values into Python-native nested lists when possible."""
-        normalized_value = to_float32(value) if hasattr(value, "astype") else value
-        return normalized_value.tolist() if hasattr(normalized_value, "tolist") else normalized_value
+    def _unsafe_shape_error(self, source: str, shape: tuple[int, ...] | None, reason: str) -> RuntimeError:
+        """Build an actionable error for unsafe MLX embedding tensor shapes."""
+        return RuntimeError(
+            f"MLX embedding output for model '{self.model_id}' on backend 'mlx' from {source} had "
+            f"unsupported shape {_format_shape(shape)}: {reason}. Track refused to materialize it."
+        )
+
+    def _validate_tensor_shape(
+        self,
+        source: str,
+        value: Any,
+        allowed_ranks: set[int],
+        attention_mask: list[list[int]] | None = None,
+    ) -> None:
+        """Validate tensor metadata before converting MLX values into Python lists."""
+        shape = _array_shape(value)
+        if shape is None:
+            return
+        rank = len(shape)
+        if rank not in allowed_ranks:
+            allowed = ", ".join(str(item) for item in sorted(allowed_ranks))
+            raise self._unsafe_shape_error(source, shape, f"expected rank {allowed}, got rank {rank}")
+        element_count = _product(shape)
+        nbytes = getattr(value, "nbytes", None)
+        try:
+            byte_count = int(nbytes) if nbytes is not None else None
+        except (TypeError, ValueError):
+            byte_count = None
+        if element_count > _MAX_SAFE_MLX_EMBEDDING_ELEMENTS or (
+            byte_count is not None and byte_count > _MAX_SAFE_MLX_EMBEDDING_BYTES
+        ):
+            raise self._unsafe_shape_error(
+                source,
+                shape,
+                "tensor is too large for safe embedding extraction",
+            )
+        if attention_mask is None:
+            return
+        if shape[0] != len(attention_mask):
+            raise self._unsafe_shape_error(
+                source,
+                shape,
+                f"batch dimension does not match attention mask batch size {len(attention_mask)}",
+            )
+        if rank >= 3 and attention_mask and shape[1] != len(attention_mask[0]):
+            raise self._unsafe_shape_error(
+                source,
+                shape,
+                f"sequence dimension does not match attention mask width {len(attention_mask[0])}",
+            )
+
+    def _safe_array_to_data(
+        self,
+        source: str,
+        value: Any,
+        to_float32: Callable[..., Any],
+        allowed_ranks: set[int],
+        attention_mask: list[list[int]] | None = None,
+    ) -> Any:
+        """Convert tensor-like values after validating shape and catching MLX allocation errors."""
+        self._validate_tensor_shape(source, value, allowed_ranks, attention_mask)
+        try:
+            normalized_value = to_float32(value) if hasattr(value, "astype") else value
+            self._validate_tensor_shape(source, normalized_value, allowed_ranks, attention_mask)
+            return normalized_value.tolist() if hasattr(normalized_value, "tolist") else normalized_value
+        except Exception as exc:
+            if _is_metal_allocation_error(exc):
+                raise self._unsafe_shape_error(source, _array_shape(value), str(exc)) from exc
+            raise
 
     def _extract_batch_tokenizer_inputs(self, texts: list[str]) -> tuple[Any, Any, list[list[int]]]:
         """Tokenize a batch with tokenizer call semantics used by ``mlx_embeddings``."""
@@ -194,7 +292,7 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
             raise RuntimeError("MLX tokenizer batch output did not include an attention mask.")
         if runtime.to_float32 is None:
             raise RuntimeError("MLX embeddings are not available in the current environment.") from self.load_error
-        attention_mask_rows = self._array_to_data(attention_mask, runtime.to_float32)
+        attention_mask_rows = self._safe_array_to_data("attention_mask", attention_mask, runtime.to_float32, {2})
         if not isinstance(attention_mask_rows, list):
             raise RuntimeError("MLX tokenizer attention mask was returned in an unsupported shape.")
         return input_ids, attention_mask, attention_mask_rows
@@ -211,18 +309,28 @@ class MLXEmbeddingModel(BaseEmbeddingModel):
         """Extract pooled embedding rows from one MLX model forward pass."""
         text_embeds = getattr(outputs, "text_embeds", None)
         if text_embeds is not None:
-            embedding_rows = self._array_to_data(text_embeds, to_float32)
+            embedding_rows = self._safe_array_to_data("text_embeds", text_embeds, to_float32, {2}, attention_mask)
             return self._coerce_embedding_rows(embedding_rows)
         last_hidden_state = getattr(outputs, "last_hidden_state", None)
         if last_hidden_state is not None:
-            hidden_state_rows = self._array_to_data(last_hidden_state, to_float32)
+            hidden_state_rows = self._safe_array_to_data(
+                "last_hidden_state",
+                last_hidden_state,
+                to_float32,
+                {3},
+                attention_mask,
+            )
             return self._mean_pool_hidden_states(hidden_state_rows, attention_mask)
         pooled_output = getattr(outputs, "pooler_output", None)
         if pooled_output is not None:
-            pooled_rows = self._array_to_data(pooled_output, to_float32)
+            pooled_rows = self._safe_array_to_data("pooler_output", pooled_output, to_float32, {2}, attention_mask)
             return self._coerce_embedding_rows(pooled_rows)
         if isinstance(outputs, (tuple, list)) and outputs:
-            candidate = self._array_to_data(outputs[0], to_float32)
+            candidate_shape = _array_shape(outputs[0])
+            if candidate_shape is not None and len(candidate_shape) not in {2, 3}:
+                raise self._unsafe_shape_error("outputs[0]", candidate_shape, "expected rank 2 or 3")
+            allowed_ranks = {2, 3} if candidate_shape is None else {len(candidate_shape)}
+            candidate = self._safe_array_to_data("outputs[0]", outputs[0], to_float32, allowed_ranks, attention_mask)
             if self._is_sequence_hidden_states(candidate):
                 return self._mean_pool_hidden_states(candidate, attention_mask)
             if self._is_embedding_rows(candidate):

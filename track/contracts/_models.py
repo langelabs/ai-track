@@ -18,6 +18,7 @@ class InferenceConfig(BaseModel):
     quantize: int | None = None
     verbose: bool | None = None
     trust_remote_code: bool | None = None
+    embedding_batch_size: int | None = None
 
 
 class AiModelCapabilities(BaseModel):

@@ -199,6 +199,14 @@ def test_mlx_embedding_falls_back_to_hidden_state_pooling() -> None:
     class FakeArray:
         def __init__(self, values: object) -> None:
             self._values = values
+            if values == [[11, 12]]:
+                self.shape = (1, 2)
+            elif values == [[11, 12], [21, 0]]:
+                self.shape = (2, 2)
+            elif values == [[[2.0, 4.0], [6.0, 8.0]]]:
+                self.shape = (1, 2, 2)
+            else:
+                self.shape = (2, 2, 2)
 
         def astype(self, _dtype: object) -> "FakeArray":
             return self
@@ -257,6 +265,14 @@ def test_mlx_embedding_reads_text_embeds_from_batch_tokenizer_output() -> None:
     class FakeArray:
         def __init__(self, values: object) -> None:
             self._values = values
+            if values == [[101, 102]]:
+                self.shape = (1, 2)
+            elif values == [[1, 1]]:
+                self.shape = (1, 2)
+            elif values == [[0.5, 1.5]]:
+                self.shape = (1, 2)
+            else:
+                self.shape = (2, 2)
 
         def astype(self, _dtype: object) -> "FakeArray":
             return self
@@ -304,6 +320,112 @@ def test_mlx_embedding_reads_text_embeds_from_batch_tokenizer_output() -> None:
 
     assert model.embed("hi") == [0.5, 1.5]
     assert model.embed(["hi", "hello"]) == [[0.5, 1.5], [2.5, 3.5]]
+
+
+def test_mlx_embedding_rejects_high_rank_text_embeds_before_conversion() -> None:
+    """Per-token or higher-rank text embeddings should be rejected before expensive list conversion."""
+    from track.inference.embedding.mlx import MLXEmbeddingModel, MLXEmbeddingRuntime
+
+    class FakeArray:
+        def __init__(self, shape: tuple[int, ...]) -> None:
+            """Store tensor shape metadata."""
+            self.shape = shape
+
+        def astype(self, _dtype: object) -> "FakeArray":
+            raise AssertionError("astype should not be called for unsupported text_embeds shape")
+
+        def tolist(self) -> object:
+            raise AssertionError("tolist should not be called for unsupported text_embeds shape")
+
+    model = MLXEmbeddingModel.__new__(MLXEmbeddingModel)
+    model.runtime = MLXEmbeddingRuntime(load=lambda *_args, **_kwargs: (None, None), loader_name="test")
+    model.model_id = "mlx/test-embedding"
+
+    for shape in ((1, 2048, 768), (1, 2, 3, 4)):
+        with pytest.raises(RuntimeError, match="text_embeds.*unsupported shape"):
+            model._extract_embedding_rows(
+                SimpleNamespace(text_embeds=FakeArray(shape)),
+                [[1, 1]],
+                lambda arr: arr,
+            )
+
+
+def test_mlx_embedding_rejects_huge_text_embeds_before_conversion() -> None:
+    """Large pooled embedding tensors should be rejected before materialization."""
+    from track.inference.embedding.mlx import MLXEmbeddingModel, MLXEmbeddingRuntime
+
+    class FakeArray:
+        shape = (1, 50_000_000)
+
+        def astype(self, _dtype: object) -> "FakeArray":
+            raise AssertionError("astype should not be called for unsafe text_embeds shape")
+
+        def tolist(self) -> object:
+            raise AssertionError("tolist should not be called for unsafe text_embeds shape")
+
+    model = MLXEmbeddingModel.__new__(MLXEmbeddingModel)
+    model.runtime = MLXEmbeddingRuntime(load=lambda *_args, **_kwargs: (None, None), loader_name="test")
+    model.model_id = "mlx/test-embedding"
+
+    with pytest.raises(RuntimeError, match="refused to materialize"):
+        model._extract_embedding_rows(
+            SimpleNamespace(text_embeds=FakeArray()),
+            [[1]],
+            lambda arr: arr,
+        )
+
+
+def test_mlx_embedding_rejects_hidden_state_attention_mask_shape_mismatch() -> None:
+    """Hidden-state tensors should match the tokenizer attention mask shape before conversion."""
+    from track.inference.embedding.mlx import MLXEmbeddingModel, MLXEmbeddingRuntime
+
+    class FakeArray:
+        shape = (2, 4, 3)
+
+        def astype(self, _dtype: object) -> "FakeArray":
+            raise AssertionError("astype should not be called for mismatched hidden states")
+
+        def tolist(self) -> object:
+            raise AssertionError("tolist should not be called for mismatched hidden states")
+
+    model = MLXEmbeddingModel.__new__(MLXEmbeddingModel)
+    model.runtime = MLXEmbeddingRuntime(load=lambda *_args, **_kwargs: (None, None), loader_name="test")
+    model.model_id = "mlx/test-embedding"
+
+    with pytest.raises(RuntimeError, match="last_hidden_state.*attention mask"):
+        model._extract_embedding_rows(
+            SimpleNamespace(last_hidden_state=FakeArray()),
+            [[1, 1, 1]],
+            lambda arr: arr,
+        )
+
+
+def test_mlx_embedding_wraps_metal_allocation_errors() -> None:
+    """Known Metal allocation failures should be converted into actionable Track errors."""
+    from track.inference.embedding.mlx import MLXEmbeddingModel, MLXEmbeddingRuntime
+
+    class FakeArray:
+        shape = (1, 768)
+
+        def astype(self, _dtype: object) -> "FakeArray":
+            return self
+
+        def tolist(self) -> object:
+            raise RuntimeError(
+                "[metal::malloc] Attempting to allocate 180178176676 bytes which is greater than "
+                "the maximum allowed buffer size of 38654705664 bytes."
+            )
+
+    model = MLXEmbeddingModel.__new__(MLXEmbeddingModel)
+    model.runtime = MLXEmbeddingRuntime(load=lambda *_args, **_kwargs: (None, None), loader_name="test")
+    model.model_id = "mlx/test-embedding"
+
+    with pytest.raises(RuntimeError, match="text_embeds.*refused to materialize"):
+        model._extract_embedding_rows(
+            SimpleNamespace(text_embeds=FakeArray()),
+            [[1]],
+            lambda arr: arr,
+        )
 
 
 def test_mlx_embedding_reports_unsupported_output_shapes() -> None:
