@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import concurrent.futures
+import subprocess
+import sys
 import threading
 import time
 from importlib import import_module
@@ -18,6 +20,22 @@ def test_hub_uses_canonical_name_only() -> None:
     assert hub_module.AiHub.__name__ == "AiHub"
     assert not hasattr(hub_module, "Hub")
     assert not hasattr(hub_module, "ModelRouter")
+
+
+def test_hub_api_router_import_is_lazy() -> None:
+    """Ensure importing the hub does not import the optional FastAPI dependency."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import track.hub; print('fastapi' in sys.modules)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "False"
 
 
 def test_hub_routes_local_models_to_local_provider() -> None:

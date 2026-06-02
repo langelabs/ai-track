@@ -20,9 +20,10 @@ coverage.xml
 # Build and packaging artifacts
 build/
 dist/
-*.egg-info/
+ai_track.egg-info
 .eggs/
 pip-wheel-metadata/
+docs
 
 # uv artifacts
 .uv/

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from threading import RLock
+from typing import TYPE_CHECKING
 
 from track.contracts import AiModel
 from track.exceptions import ProviderNotSupported
@@ -16,6 +17,9 @@ from track.providers import (
     OpenAIProvider,
     OpenRouterProvider,
 )
+
+if TYPE_CHECKING:
+    from fastapi import APIRouter
 
 
 _REMOTE_PROVIDER_TYPES = {
@@ -100,3 +104,9 @@ class AiHub:
         """Return the async client for one registered model id."""
         model_id = model if isinstance(model, str) else model.model_id
         return self._providers_by_model_id[model_id].get_async_client()
+
+    def get_api_router(self) -> APIRouter:
+        """Return a FastAPI router exposing OpenAI-compatible API endpoints."""
+        from track.api import create_api_router
+
+        return create_api_router(self)

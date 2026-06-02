@@ -49,3 +49,12 @@ def test_cuda_extra_installs_llama_cpp_python() -> None:
     cuda_dependencies = project_data["optional-dependencies"]["cuda"]
 
     assert any(dependency.startswith("llama-cpp-python>=0.3") for dependency in cuda_dependencies)
+
+
+def test_api_extra_installs_fastapi_dependencies() -> None:
+    """Ensure the API extra installs FastAPI and multipart form handling."""
+    project_data = _load_pyproject()["project"]
+    api_dependencies = project_data["optional-dependencies"]["api"]
+
+    assert any(dependency.startswith("fastapi>=") for dependency in api_dependencies)
+    assert any(dependency.startswith("python-multipart>=") for dependency in api_dependencies)
