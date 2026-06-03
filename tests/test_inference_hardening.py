@@ -648,8 +648,8 @@ def test_diffusers_generation_reuses_pipeline() -> None:
     assert len(calls) == 2
 
 
-def test_diffusers_callback_generation_reuses_pipeline_after_partial_decode() -> None:
-    """Diffusers callback image generation should keep the pipeline after decoding intermediate latents."""
+def test_diffusers_callback_generation_rebuilds_pipeline_after_partial_decode() -> None:
+    """Diffusers callback image generation should rebuild the pipeline after decoding intermediate latents."""
     from track.inference.image.diffusers import DiffusersFluxImageModel
 
     class FakeNoGrad:
@@ -710,8 +710,10 @@ def test_diffusers_callback_generation_reuses_pipeline_after_partial_decode() ->
     model.model_path = None
     model.load_error = None
     model._generation_lock = __import__("threading").Lock()
-    pipeline = FakePipeline()
-    model.pipeline = pipeline
+    first_pipeline = FakePipeline()
+    replacement_pipeline = FakePipeline()
+    model.pipeline = first_pipeline
+    model._build_pipeline = lambda: replacement_pipeline  # type: ignore[method-assign]
     callback_images: list[object] = []
 
     import sys
@@ -733,8 +735,111 @@ def test_diffusers_callback_generation_reuses_pipeline_after_partial_decode() ->
 
     assert image == "final-1"
     assert callback_images == [((4.0, False), "pil")]
-    assert pipeline.hook_resets == 1
-    assert model.pipeline is pipeline
+    assert first_pipeline.hook_resets == 1
+    assert model.pipeline is replacement_pipeline
+
+
+def test_diffusers_second_callback_generation_uses_rebuilt_pipeline() -> None:
+    """Diffusers callback image generation should not reuse a callback-decoded CUDA pipeline."""
+    from track.inference.image.diffusers import DiffusersFluxImageModel
+
+    class FakeNoGrad:
+        """Provide a context manager compatible with torch.no_grad."""
+
+        def __enter__(self) -> None:
+            """Enter the no-grad context."""
+
+        def __exit__(self, *_args: object) -> None:
+            """Exit the no-grad context."""
+
+    class FakeTorch(types.ModuleType):
+        """Provide the small subset of torch used by the image backend."""
+
+        class cuda:
+            """Record CUDA cache cleanup calls."""
+
+            empty_cache_calls = 0
+
+            @staticmethod
+            def empty_cache() -> None:
+                """Record that CUDA cache cleanup was requested."""
+                FakeTorch.cuda.empty_cache_calls += 1
+
+        @staticmethod
+        def no_grad() -> FakeNoGrad:
+            """Return a no-op no-grad context manager."""
+            return FakeNoGrad()
+
+    class FakePipeline:
+        """Simulate a callback-decoding diffusers pipeline."""
+
+        def __init__(self, label: str) -> None:
+            """Store the pipeline label and prepare call recording."""
+            self.label = label
+            self.hook_resets = 0
+            self.vae = SimpleNamespace(
+                config={"scaling_factor": 2},
+                decode=lambda latents, return_dict: [(latents, return_dict)],
+            )
+            self.image_processor = SimpleNamespace(postprocess=lambda image, output_type: [(image, output_type)])
+
+        def __call__(self, **kwargs: object) -> SimpleNamespace:
+            """Invoke a step callback and return a labeled final image."""
+            callback = cast(
+                Callable[[object, int, object, dict[str, object]], object] | None,
+                kwargs.get("callback_on_step_end"),
+            )
+            if callback is not None:
+                callback(self, 0, None, {"latents": 8})
+            return SimpleNamespace(images=[f"final-{self.label}"])
+
+        def maybe_free_model_hooks(self) -> None:
+            """Record hook cleanup on this pipeline."""
+            self.hook_resets += 1
+
+    first_pipeline = FakePipeline("first")
+    second_pipeline = FakePipeline("second")
+    third_pipeline = FakePipeline("third")
+    rebuilds = iter([second_pipeline, third_pipeline])
+
+    model = DiffusersFluxImageModel.__new__(DiffusersFluxImageModel)
+    model.model_id = "test/image"
+    model.device = "cuda"
+    model.model_path = None
+    model.load_error = None
+    model._generation_lock = __import__("threading").Lock()
+    model.pipeline = first_pipeline
+    model._build_pipeline = lambda: next(rebuilds)  # type: ignore[method-assign]
+
+    import sys
+
+    previous_torch = sys.modules.get("torch")
+    sys.modules["torch"] = FakeTorch("torch")
+    try:
+        first_image = model.generate_image(
+            prompt="first",
+            size=32,
+            steps=4,
+            callback=lambda _step, _total, _image: None,
+        )
+        second_image = model.generate_image(
+            prompt="second",
+            size=32,
+            steps=4,
+            callback=lambda _step, _total, _image: None,
+        )
+    finally:
+        if previous_torch is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = previous_torch
+
+    assert first_image == "final-first"
+    assert second_image == "final-second"
+    assert first_pipeline.hook_resets == 1
+    assert second_pipeline.hook_resets == 1
+    assert model.pipeline is third_pipeline
+    assert FakeTorch.cuda.empty_cache_calls == 2
 
 
 def test_diffusers_generation_resets_offload_hooks_between_generations() -> None:
