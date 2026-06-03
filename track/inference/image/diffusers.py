@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 import logging
 import math
 from pathlib import Path
-from queue import Queue
-from threading import Event, Lock, Thread
+from threading import Lock
 from typing import Any
 
-from track.contracts import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
+from track.contracts import BaseImageGenerationModel, ImageGenerationCallback
 
 logger = logging.getLogger(__name__)
-
-_STREAM_CANCEL_JOIN_TIMEOUT_SECONDS = 5.0
 
 
 class DiffusersFluxImageModel(BaseImageGenerationModel):
@@ -72,62 +69,8 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
             steps=steps,
             callback_on_step_end=callback_on_step_end,
             seed=seed,
-            recreate_pipeline_after_run=callback_on_step_end is not None,
         )
         return result.images[0]
-
-    def stream_image(
-        self,
-        prompt: str,
-        size: int = 512,
-        steps: int = 4,
-        seed: int | None = None,
-    ) -> Iterator[ImageGenerationEvent]:
-        """Yield intermediate and final images while the pipeline runs."""
-        if self.pipeline is None:
-            raise RuntimeError("Diffusers is not available in the current environment.") from self.load_error
-        event_queue: Queue[object] = Queue()
-        sentinel = object()
-        cancel_event = Event()
-
-        def run_generation() -> None:
-            """Execute the diffusers pipeline and publish the final image."""
-            try:
-                result = self._run_pipeline(
-                    prompt=prompt,
-                    size=size,
-                    steps=steps,
-                    seed=seed,
-                    recreate_pipeline_after_run=True,
-                )
-                if not cancel_event.is_set():
-                    event_queue.put(ImageGenerationEvent(image=result.images[0], step=steps - 1, kind="final"))
-            except BaseException as exc:  # pragma: no cover - defensive propagation
-                event_queue.put(exc)
-            finally:
-                event_queue.put(sentinel)
-
-        worker = Thread(target=run_generation, daemon=True)
-        worker.start()
-        try:
-            while True:
-                item = event_queue.get()
-                if item is sentinel:
-                    break
-                if isinstance(item, BaseException):
-                    raise item
-                if isinstance(item, ImageGenerationEvent):
-                    yield item
-        finally:
-            if worker.is_alive():
-                cancel_event.set()
-                _request_pipeline_interrupt(self.pipeline)
-            worker.join(timeout=_STREAM_CANCEL_JOIN_TIMEOUT_SECONDS)
-            if worker.is_alive():  # pragma: no cover - defensive logging for stuck native kernels
-                logger.warning(
-                    "Diffusers image stream worker did not exit within %.1f seconds after cancellation.",
-                    _STREAM_CANCEL_JOIN_TIMEOUT_SECONDS,
-                )
 
     def _run_pipeline(
         self,
@@ -136,7 +79,6 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         steps: int,
         callback_on_step_end: Any | None = None,
         seed: int | None = None,
-        recreate_pipeline_after_run: bool = False,
     ) -> Any:
         """Execute the underlying pipeline with the shared generation settings."""
         if self.pipeline is None:
@@ -167,8 +109,6 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
             finally:
                 _reset_pipeline_hooks(active_pipeline)
                 _empty_cuda_cache_if_available(torch, self.device)
-                if recreate_pipeline_after_run:
-                    self._recreate_pipeline()
 
     def _build_pipeline(self) -> Any:
         """Construct a diffusers FLUX pipeline with CPU offload enabled."""
@@ -182,10 +122,6 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         )
         pipeline.enable_model_cpu_offload(device=self.device)
         return pipeline
-
-    def _recreate_pipeline(self) -> None:
-        """Replace the current diffusers pipeline with a fresh offloaded instance."""
-        self.pipeline = self._build_pipeline()
 
     def _get_generation_lock(self) -> Lock:
         """Return the lock that protects stateful diffusers offload hooks."""
@@ -218,12 +154,6 @@ def _reset_pipeline_interrupt(pipe: Any) -> None:
     """Clear stale diffusers interruption state before a new generation."""
     if hasattr(pipe, "_interrupt"):
         pipe._interrupt = False
-
-
-def _request_pipeline_interrupt(pipe: Any) -> None:
-    """Ask a diffusers pipeline to stop at its next callback boundary."""
-    if hasattr(pipe, "_interrupt"):
-        pipe._interrupt = True
 
 
 def _reset_pipeline_hooks(pipe: Any) -> None:

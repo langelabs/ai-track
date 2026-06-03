@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from track.contracts import AiModel, AiModelCapabilities, AudioGenerationResult, ImageGenerationEvent, Message, TranscriptionResult
+from track.contracts import AiModel, AiModelCapabilities, AudioGenerationResult, Message, TranscriptionResult
 from track.hub import AiHub
 from track.inference.openai import Client
 from track.providers import AiProvider
@@ -76,18 +76,6 @@ class _FakeLocalAI:
         """Return deterministic image bytes."""
         del size, steps, callback, seed
         return f"image:{prompt}".encode()
-
-    def stream_image(
-        self,
-        prompt: str,
-        size: int = 512,
-        steps: int = 4,
-        seed: int | None = None,
-    ) -> Iterator[ImageGenerationEvent]:
-        """Yield deterministic image generation events."""
-        del prompt, size, steps, seed
-        yield ImageGenerationEvent(image=b"partial", kind="intermediate", step=1)
-        yield ImageGenerationEvent(image=b"final", kind="final", step=2)
 
     def generate_speech(
         self,
@@ -184,21 +172,16 @@ def test_image_generation_returns_json_response() -> None:
     assert response.json()["data"][0]["b64_json"]
 
 
-def test_image_generation_streams_sse_chunks() -> None:
-    """Stream image generation events as OpenAI-style server-sent events."""
-    with _build_client().stream(
-        "POST",
+def test_image_generation_stream_parameter_returns_json_response() -> None:
+    """Ignore image stream requests and return the regular JSON image response."""
+    response = _build_client().post(
         "/v1/images/generations",
         json={"model": "local/test", "prompt": "sun", "stream": True},
-    ) as response:
-        response.read()
-        body = response.text
+    )
 
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/event-stream")
-    assert "image_generation.partial_image" in body
-    assert "image_generation.completed" in body
-    assert "data: [DONE]" in body
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["data"][0]["b64_json"]
 
 
 def test_speech_returns_audio_response() -> None:

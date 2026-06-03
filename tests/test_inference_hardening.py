@@ -610,172 +610,22 @@ def test_diffusers_pipeline_runs_under_generation_lock() -> None:
     assert result.images[0]["prompt"] == "hello"
 
 
-def test_diffusers_streaming_recreates_pipeline_after_generation() -> None:
-    """Diffusers streaming should replace the pipeline after final-only generation."""
+def test_diffusers_generation_reuses_pipeline() -> None:
+    """Diffusers image generation should keep the existing pipeline instance."""
     from track.inference.image.diffusers import DiffusersFluxImageModel
 
-    class FakeNoGrad:
-        """Provide a context manager compatible with torch.no_grad."""
+    calls: list[dict[str, object]] = []
 
-        def __enter__(self) -> None:
-            """Enter the no-grad context."""
-
-        def __exit__(self, *_args: object) -> None:
-            """Exit the no-grad context."""
-
-    class FakeTorch(types.ModuleType):
-        """Provide the small subset of torch used by the image backend."""
-
-        class cuda:
-            """Provide CUDA cache cleanup."""
-
-            @staticmethod
-            def empty_cache() -> None:
-                """Accept cache cleanup requests."""
-
-        @staticmethod
-        def no_grad() -> FakeNoGrad:
-            """Return a no-op no-grad context manager."""
-            return FakeNoGrad()
-
-    class FakePipeline:
-        """Simulate one diffusers pipeline instance."""
-
-        def __init__(self, name: str) -> None:
-            """Store a stable pipeline identifier for assertions."""
-            self.name = name
-            self.calls = 0
-            self.hook_resets = 0
-            self.vae = SimpleNamespace(
-                config={"scaling_factor": 2},
-                decode=lambda latents, return_dict: [(latents, return_dict)],
-            )
-            self.image_processor = SimpleNamespace(postprocess=lambda image, output_type: [(image, output_type)])
-
-        def __call__(self, **kwargs: object) -> SimpleNamespace:
-            """Emit one final image without invoking step callbacks."""
-            self.calls += 1
-            assert kwargs.get("callback_on_step_end") is None
-            return SimpleNamespace(images=[f"final-{self.name}-{self.calls}"])
-
-        def maybe_free_model_hooks(self) -> None:
-            """Record hook cleanup on the used pipeline."""
-            self.hook_resets += 1
-
-    pipelines: list[FakePipeline] = []
-
-    def build_pipeline() -> FakePipeline:
-        """Return a distinct fake pipeline each time Track rebuilds it."""
-        pipeline = FakePipeline(name=f"pipeline-{len(pipelines)}")
-        pipelines.append(pipeline)
-        return pipeline
-
-    model = DiffusersFluxImageModel.__new__(DiffusersFluxImageModel)
-    model.model_id = "test/image"
-    model.device = "cuda"
-    model.model_path = None
-    model.load_error = None
-    model._generation_lock = __import__("threading").Lock()
-    model.pipeline = build_pipeline()
-    model._build_pipeline = build_pipeline
-
-    import sys
-
-    previous_torch = sys.modules.get("torch")
-    sys.modules["torch"] = FakeTorch("torch")
-    try:
-        first_events = list(model.stream_image(prompt="hello", size=32, steps=4))
-        first_replacement = model.pipeline
-        second_events = list(model.stream_image(prompt="again", size=32, steps=4))
-    finally:
-        if previous_torch is None:
-            sys.modules.pop("torch", None)
-        else:
-            sys.modules["torch"] = previous_torch
-
-    assert [event.kind for event in first_events] == ["final"]
-    assert [event.kind for event in second_events] == ["final"]
-    assert len(pipelines) == 3
-    assert pipelines[0].hook_resets == 1
-    assert pipelines[1].hook_resets == 1
-    assert first_replacement is pipelines[1]
-    assert model.pipeline is pipelines[2]
-
-
-def test_diffusers_streaming_yields_only_final_image_without_step_callback() -> None:
-    """Diffusers streaming should avoid VAE partial decoding on CUDA."""
-    from track.inference.image.diffusers import DiffusersFluxImageModel
-
-    class FakeTorch(types.ModuleType):
-        """Provide the small subset of torch used by the image backend."""
-
-        class cuda:
-            """Provide CUDA cache cleanup."""
-
-            @staticmethod
-            def empty_cache() -> None:
-                """Accept cache cleanup requests."""
-
-    class FakePipeline:
-        """Record whether Track asks diffusers for step callbacks."""
-
-        def __init__(self) -> None:
-            """Prepare call recording."""
-            self.calls: list[dict[str, object]] = []
-            self.hook_resets = 0
-
-        def __call__(self, **kwargs: object) -> SimpleNamespace:
-            """Return a final image and record pipeline kwargs."""
-            self.calls.append(kwargs)
-            return SimpleNamespace(images=["final"])
-
-        def maybe_free_model_hooks(self) -> None:
-            """Record hook cleanup on the used pipeline."""
-            self.hook_resets += 1
-
-    pipelines: list[FakePipeline] = []
-
-    def build_pipeline() -> FakePipeline:
-        """Return a fresh fake pipeline for each rebuild."""
-        pipeline = FakePipeline()
-        pipelines.append(pipeline)
-        return pipeline
-
-    model = DiffusersFluxImageModel.__new__(DiffusersFluxImageModel)
-    model.model_id = "test/image"
-    model.device = "cuda"
-    model.model_path = None
-    model.load_error = None
-    model._generation_lock = __import__("threading").Lock()
-    model.pipeline = build_pipeline()
-    model._build_pipeline = build_pipeline
-
-    import sys
-
-    previous_torch = sys.modules.get("torch")
-    sys.modules["torch"] = FakeTorch("torch")
-    try:
-        events = list(model.stream_image(prompt="hello", size=32, steps=4))
-    finally:
-        if previous_torch is None:
-            sys.modules.pop("torch", None)
-        else:
-            sys.modules["torch"] = previous_torch
-
-    assert [event.kind for event in events] == ["final"]
-    assert pipelines[0].calls[0]["callback_on_step_end"] is None
-    assert "callback_on_step_end_tensor_inputs" not in pipelines[0].calls[0]
-
-
-def test_diffusers_non_stream_generation_reuses_pipeline() -> None:
-    """Diffusers non-stream image generation should keep the existing pipeline instance."""
-    from track.inference.image.diffusers import DiffusersFluxImageModel
+    def fake_pipeline(**kwargs: object) -> SimpleNamespace:
+        """Record one pipeline call and return the kwargs as the generated image."""
+        calls.append(kwargs)
+        return SimpleNamespace(images=[kwargs])
 
     model = DiffusersFluxImageModel.__new__(DiffusersFluxImageModel)
     model.device = "cuda"
     model.load_error = None
     model._generation_lock = __import__("threading").Lock()
-    model.pipeline = lambda **kwargs: SimpleNamespace(images=[kwargs])
+    model.pipeline = fake_pipeline
 
     import sys
 
@@ -794,10 +644,12 @@ def test_diffusers_non_stream_generation_reuses_pipeline() -> None:
 
     assert first_image["prompt"] == "hello"
     assert second_image["prompt"] == "again"
+    assert model.pipeline is fake_pipeline
+    assert len(calls) == 2
 
 
-def test_diffusers_callback_generation_recreates_pipeline_after_partial_decode() -> None:
-    """Diffusers callback image generation should rebuild after decoding intermediate latents."""
+def test_diffusers_callback_generation_reuses_pipeline_after_partial_decode() -> None:
+    """Diffusers callback image generation should keep the pipeline after decoding intermediate latents."""
     from track.inference.image.diffusers import DiffusersFluxImageModel
 
     class FakeNoGrad:
@@ -827,9 +679,9 @@ def test_diffusers_callback_generation_recreates_pipeline_after_partial_decode()
     class FakePipeline:
         """Simulate a diffusers pipeline that invokes callback-based partial decoding."""
 
-        def __init__(self, name: str) -> None:
-            """Store a stable pipeline identifier for assertions."""
-            self.name = name
+        def __init__(self) -> None:
+            """Prepare call and hook recording."""
+            self.call_count = 0
             self.hook_resets = 0
             self.vae = SimpleNamespace(
                 config={"scaling_factor": 2},
@@ -839,25 +691,18 @@ def test_diffusers_callback_generation_recreates_pipeline_after_partial_decode()
 
         def __call__(self, **kwargs: object) -> SimpleNamespace:
             """Invoke the provided step callback before returning a final image."""
+            self.call_count += 1
             callback = cast(
                 Callable[[object, int, object, dict[str, object]], object] | None,
                 kwargs.get("callback_on_step_end"),
             )
             if callback is not None:
                 callback(self, 0, None, {"latents": 8})
-            return SimpleNamespace(images=[f"final-{self.name}"])
+            return SimpleNamespace(images=[f"final-{self.call_count}"])
 
         def maybe_free_model_hooks(self) -> None:
             """Record hook cleanup on the used pipeline."""
             self.hook_resets += 1
-
-    pipelines: list[FakePipeline] = []
-
-    def build_pipeline() -> FakePipeline:
-        """Return a distinct fake pipeline each time Track rebuilds it."""
-        pipeline = FakePipeline(name=f"pipeline-{len(pipelines)}")
-        pipelines.append(pipeline)
-        return pipeline
 
     model = DiffusersFluxImageModel.__new__(DiffusersFluxImageModel)
     model.model_id = "test/image"
@@ -865,8 +710,8 @@ def test_diffusers_callback_generation_recreates_pipeline_after_partial_decode()
     model.model_path = None
     model.load_error = None
     model._generation_lock = __import__("threading").Lock()
-    model.pipeline = build_pipeline()
-    model._build_pipeline = build_pipeline
+    pipeline = FakePipeline()
+    model.pipeline = pipeline
     callback_images: list[object] = []
 
     import sys
@@ -886,25 +731,15 @@ def test_diffusers_callback_generation_recreates_pipeline_after_partial_decode()
         else:
             sys.modules["torch"] = previous_torch
 
-    assert image == "final-pipeline-0"
+    assert image == "final-1"
     assert callback_images == [((4.0, False), "pil")]
-    assert len(pipelines) == 2
-    assert pipelines[0].hook_resets == 1
-    assert model.pipeline is pipelines[1]
+    assert pipeline.hook_resets == 1
+    assert model.pipeline is pipeline
 
 
-def test_diffusers_streaming_resets_offload_hooks_between_generations() -> None:
-    """Diffusers streaming should reset stateful offload hooks before the next generation."""
+def test_diffusers_generation_resets_offload_hooks_between_generations() -> None:
+    """Diffusers generation should reset stateful offload hooks before the next generation."""
     from track.inference.image.diffusers import DiffusersFluxImageModel
-
-    class FakeNoGrad:
-        """Provide a context manager compatible with torch.no_grad."""
-
-        def __enter__(self) -> None:
-            """Enter the no-grad context."""
-
-        def __exit__(self, *_args: object) -> None:
-            """Exit the no-grad context."""
 
     class FakeTorch(types.ModuleType):
         """Provide the small subset of torch used by the image backend."""
@@ -918,11 +753,6 @@ def test_diffusers_streaming_resets_offload_hooks_between_generations() -> None:
             def empty_cache() -> None:
                 """Record that CUDA cache cleanup was requested."""
                 FakeTorch.cuda.empty_cache_calls += 1
-
-        @staticmethod
-        def no_grad() -> FakeNoGrad:
-            """Return a no-op no-grad context manager."""
-            return FakeNoGrad()
 
     class FakePipeline:
         """Simulate a stateful offloaded diffusers pipeline."""
@@ -943,7 +773,7 @@ def test_diffusers_streaming_resets_offload_hooks_between_generations() -> None:
             if self._interrupt:
                 raise RuntimeError("stale interrupt flag was not reset")
             if kwargs.get("callback_on_step_end") is not None:
-                raise RuntimeError("streaming should not install a step callback")
+                raise RuntimeError("plain generation should not install a step callback")
             self.calls.append(kwargs)
             self._interrupt = True
             return SimpleNamespace(images=[f"final-{len(self.calls)}"])
@@ -956,127 +786,27 @@ def test_diffusers_streaming_resets_offload_hooks_between_generations() -> None:
     model.device = "cuda"
     model.load_error = None
     model._generation_lock = __import__("threading").Lock()
-    pipelines: list[FakePipeline] = []
-
-    def build_pipeline() -> FakePipeline:
-        """Return a fresh fake pipeline for each rebuild."""
-        pipeline = FakePipeline()
-        pipelines.append(pipeline)
-        return pipeline
-
-    model.pipeline = build_pipeline()
-    model._build_pipeline = build_pipeline
+    pipeline = FakePipeline()
+    model.pipeline = pipeline
 
     import sys
 
     previous_torch = sys.modules.get("torch")
     sys.modules["torch"] = FakeTorch("torch")
     try:
-        first_events = list(model.stream_image(prompt="hello", size=32, steps=4))
-        second_events = list(model.stream_image(prompt="again", size=32, steps=4))
+        first_image = model.generate_image(prompt="hello", size=32, steps=4)
+        second_image = model.generate_image(prompt="again", size=32, steps=4)
     finally:
         if previous_torch is None:
             sys.modules.pop("torch", None)
         else:
             sys.modules["torch"] = previous_torch
 
-    assert [event.kind for event in first_events] == ["final"]
-    assert [event.kind for event in second_events] == ["final"]
-    assert pipelines[0].hook_resets == 1
-    assert pipelines[1].hook_resets == 1
+    assert first_image == "final-1"
+    assert second_image == "final-2"
+    assert pipeline.hook_resets == 2
+    assert model.pipeline is pipeline
     assert FakeTorch.cuda.empty_cache_calls == 2
-
-
-def test_diffusers_streaming_close_after_final_allows_next_generation() -> None:
-    """Closing a consumed final-only diffusers image stream should allow the next generation."""
-    from track.inference.image.diffusers import DiffusersFluxImageModel
-
-    class FakeNoGrad:
-        """Provide a context manager compatible with torch.no_grad."""
-
-        def __enter__(self) -> None:
-            """Enter the no-grad context."""
-
-        def __exit__(self, *_args: object) -> None:
-            """Exit the no-grad context."""
-
-    class FakeTorch(types.ModuleType):
-        """Provide the small subset of torch used by the image backend."""
-
-        class cuda:
-            """Provide CUDA cache cleanup."""
-
-            @staticmethod
-            def empty_cache() -> None:
-                """Accept cache cleanup requests."""
-
-        @staticmethod
-        def no_grad() -> FakeNoGrad:
-            """Return a no-op no-grad context manager."""
-            return FakeNoGrad()
-
-    class FakePipeline:
-        """Simulate a pipeline that can be interrupted between preview callbacks."""
-
-        def __init__(self) -> None:
-            """Prepare synchronization points for the stream lifecycle test."""
-            self._interrupt = False
-            self.call_count = 0
-            self.hook_resets = 0
-            self.vae = SimpleNamespace(
-                config={"scaling_factor": 2},
-                decode=lambda latents, return_dict: [(latents, return_dict)],
-            )
-            self.image_processor = SimpleNamespace(postprocess=lambda image, output_type: [(image, output_type)])
-
-        def __call__(self, **kwargs: object) -> SimpleNamespace:
-            """Generate one final image without installing step callbacks."""
-            self.call_count += 1
-            if kwargs.get("callback_on_step_end") is not None:
-                raise RuntimeError("streaming should not install a step callback")
-            return SimpleNamespace(images=[f"final-{self.call_count}"])
-
-        def maybe_free_model_hooks(self) -> None:
-            """Record that stateful offload hooks were reset."""
-            self.hook_resets += 1
-
-    model = DiffusersFluxImageModel.__new__(DiffusersFluxImageModel)
-    model.device = "cuda"
-    model.load_error = None
-    model._generation_lock = __import__("threading").Lock()
-    pipelines: list[FakePipeline] = []
-
-    def build_pipeline() -> FakePipeline:
-        """Return a fresh fake pipeline for each rebuild."""
-        pipeline = FakePipeline()
-        pipelines.append(pipeline)
-        return pipeline
-
-    model.pipeline = build_pipeline()
-    model._build_pipeline = build_pipeline
-
-    import sys
-
-    previous_torch = sys.modules.get("torch")
-    sys.modules["torch"] = FakeTorch("torch")
-    try:
-        stream = model.stream_image(prompt="hello", size=32, steps=4)
-        first_event = next(stream)
-        stream.close()
-
-        next_events = list(model.stream_image(prompt="again", size=32, steps=4))
-    finally:
-        if previous_torch is None:
-            sys.modules.pop("torch", None)
-        else:
-            sys.modules["torch"] = previous_torch
-
-    assert first_event.kind == "final"
-    assert pipelines[0].call_count == 1
-    assert pipelines[1].call_count == 1
-    assert pipelines[0].hook_resets == 1
-    assert pipelines[1].hook_resets == 1
-    assert next_events[-1].kind == "final"
 
 
 def test_diffusers_unpacks_flux2_packed_step_latents_before_vae_decode() -> None:

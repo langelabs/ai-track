@@ -3,11 +3,11 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
-from track.contracts import ImageGenerationEvent, SupportsOpenAICompatibility
+from track.contracts import SupportsOpenAICompatibility
 
 
 def test_client_exposes_expected_resources() -> None:
@@ -88,7 +88,7 @@ def test_image_resource_rejects_multiple_images_request() -> None:
     """Image compatibility should reject OpenAI parameters that the local runtime cannot honor."""
     from track.inference.openai import Client
 
-    local_ai = SimpleNamespace(generate_image=lambda **_: object(), stream_image=lambda **_: iter(()))
+    local_ai = SimpleNamespace(generate_image=lambda **_: object())
     client = Client(local_ai=cast(SupportsOpenAICompatibility, local_ai))
 
     with pytest.raises(ValueError, match="supports only n=1"):
@@ -99,33 +99,21 @@ def test_image_resource_rejects_rectangular_sizes() -> None:
     """Image compatibility should reject rectangular size metadata it cannot generate faithfully."""
     from track.inference.openai import Client
 
-    local_ai = SimpleNamespace(generate_image=lambda **_: object(), stream_image=lambda **_: iter(()))
+    local_ai = SimpleNamespace(generate_image=lambda **_: object())
     client = Client(local_ai=cast(SupportsOpenAICompatibility, local_ai))
 
     with pytest.raises(ValueError, match="supports only square image sizes"):
         client.images.generate(model="image", prompt="test", size="1024x1536")
 
 
-def test_image_stream_close_closes_underlying_local_iterator() -> None:
-    """Closing the OpenAI image stream should close the local stream iterator."""
+def test_image_stream_parameter_returns_regular_image_response() -> None:
+    """Local image compatibility should ignore stream=True and return the regular image response."""
     from track.inference.openai import Client
 
-    closed = False
-
-    def local_stream(**_: object):
-        """Yield one local image event and record generator closure."""
-        nonlocal closed
-        try:
-            yield ImageGenerationEvent(image=b"preview", step=0, kind="intermediate")
-            yield ImageGenerationEvent(image=b"final", step=1, kind="final")
-        finally:
-            closed = True
-
-    local_ai = SimpleNamespace(generate_image=lambda **_: object(), stream_image=local_stream)
+    generated_image = object()
+    local_ai = SimpleNamespace(generate_image=lambda **_: generated_image)
     client = Client(local_ai=cast(SupportsOpenAICompatibility, local_ai))
 
-    stream = cast(Any, client.images.generate(model="image", prompt="test", stream=True))
-    assert next(stream).type == "image_generation.partial_image"
-    stream.close()
+    response = client.images.generate(model="image", prompt="test", stream=True)
 
-    assert closed is True
+    assert response.data[0].b64_json

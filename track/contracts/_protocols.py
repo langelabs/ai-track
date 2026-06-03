@@ -8,7 +8,6 @@ from typing import Any, Protocol
 
 from ._audio import AudioGenerationResult
 from ._content import Message
-from ._image import ImageGenerationEvent
 from ._transcription import TranscriptionResult
 
 
@@ -40,15 +39,6 @@ class SupportsOpenAICompatibility(Protocol):
 
     def stream_chat(self, messages: list[Message]) -> Iterator[str]:
         """Yield text chunks for a chat response."""
-
-    def stream_image(
-        self,
-        prompt: str,
-        size: int = 512,
-        steps: int = 4,
-        seed: int | None = None,
-    ) -> Iterator[ImageGenerationEvent]:
-        """Yield image generation events for a prompt."""
 
     def generate_speech(
         self,

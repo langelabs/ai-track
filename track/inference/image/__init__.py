@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from track.contracts import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
+from track.contracts import BaseImageGenerationModel, ImageGenerationCallback
 
 from .models import create_image_generation_model
 
 __all__ = [
     "BaseImageGenerationModel",
     "ImageGenerationCallback",
-    "ImageGenerationEvent",
     "create_image_generation_model",
 ]
 
