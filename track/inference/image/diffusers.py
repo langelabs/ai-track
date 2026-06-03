@@ -105,10 +105,13 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
             if callback_on_step_end is not None:
                 pipeline_kwargs["callback_on_step_end_tensor_inputs"] = ["latents"]
             try:
-                return active_pipeline(**pipeline_kwargs)
+                result = active_pipeline(**pipeline_kwargs)
             finally:
                 _reset_pipeline_hooks(active_pipeline)
                 _empty_cuda_cache_if_available(torch, self.device)
+            if callback_on_step_end is not None and str(self.device).startswith("cuda"):
+                self.pipeline = self._build_pipeline()
+            return result
 
     def _build_pipeline(self) -> Any:
         """Construct a diffusers FLUX pipeline with CPU offload enabled."""
