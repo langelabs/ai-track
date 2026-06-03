@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 import random
 import threading
 from typing import Any
 
-from track.contracts import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
+from track.contracts import BaseImageGenerationModel, ImageGenerationCallback
 from track.utils import resolve_model_location
 
 from ._validation import ImageGenerationOutputError, validate_generated_image
@@ -111,18 +110,6 @@ class MfluxImageGenerationModel(BaseImageGenerationModel):
         if callback is not None:
             callback(steps, steps, image)
         return image
-
-    def stream_image(
-        self,
-        prompt: str,
-        size: int = 512,
-        steps: int = 4,
-        seed: int | None = None,
-    ) -> Iterator[ImageGenerationEvent]:
-        """Yield the final image for a prompt."""
-        generated = self._generate(prompt=prompt, size=size, steps=steps, seed=seed)
-        image = self._validate_generation_output(generated)
-        yield ImageGenerationEvent(image=image, step=steps - 1, kind="final")
 
     def _generate(self, prompt: str, size: int, steps: int, seed: int | None = None) -> Any:
         """Invoke the underlying MFLUX model with the configured parameters."""

@@ -151,13 +151,11 @@ def create_api_router(hub: AiHub) -> APIRouter:
 
     @router.post("/v1/images/generations")
     async def generate_image(request: Request) -> Any:
-        """Generate or stream OpenAI-compatible images."""
+        """Generate OpenAI-compatible images."""
         try:
             payload = await request.json()
             model_id = _extract_model_id(payload)
             result = _get_client(hub, model_id).images.generate(**payload)
-            if payload.get("stream") is True:
-                return StreamingResponse(_stream_sse_events(result), media_type="text/event-stream")
             return JSONResponse(_serialize_response(result))
         except Exception as error:
             return handle_error(error)

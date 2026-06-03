@@ -150,24 +150,22 @@ def test_hub_serializes_local_runtime_calls_across_models(monkeypatch: pytest.Mo
     assert max_active_calls == 1
 
 
-def test_hub_serializes_streaming_local_runtime_calls_until_consumed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure streamed local inference keeps the hub operation guard while consumed."""
-    from collections.abc import Iterator
-
-    from track.contracts import AiModel, AiModelCapabilities, BaseEmbeddingModel, BaseImageGenerationModel, ImageGenerationEvent
+def test_hub_serializes_image_generation_local_runtime_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure local image generation keeps the hub operation guard while running."""
+    from track.contracts import AiModel, AiModelCapabilities, BaseEmbeddingModel, BaseImageGenerationModel
     from track.hub import AiHub
     from track.inference.openai import Client
     from track.providers import LocalProvider
 
     monkeypatch.setattr("track.inference._runtime._detect_backend_with_probe", lambda: (None, None))
 
-    stream_entered = threading.Event()
-    release_stream = threading.Event()
+    image_generation_entered = threading.Event()
+    release_image_generation = threading.Event()
     embedding_started = threading.Event()
     embedding_finished = threading.Event()
 
     class FakeImageBackend(BaseImageGenerationModel):
-        """Fake image backend that keeps a stream open until the test releases it."""
+        """Fake image backend that keeps generation open until the test releases it."""
 
         backend_name = "fake"
 
@@ -179,22 +177,11 @@ def test_hub_serializes_streaming_local_runtime_calls_until_consumed(monkeypatch
             callback: object | None = None,
             seed: int | None = None,
         ) -> object:
-            """Generate one fake image."""
+            """Generate one fake image after holding the operation lock."""
             del prompt, size, steps, callback, seed
+            image_generation_entered.set()
+            release_image_generation.wait(timeout=1)
             return b"image"
-
-        def stream_image(
-            self,
-            prompt: str,
-            size: int = 512,
-            steps: int = 4,
-            seed: int | None = None,
-        ) -> Iterator[ImageGenerationEvent]:
-            """Yield one final event after holding the stream open."""
-            del prompt, size, steps, seed
-            stream_entered.set()
-            release_stream.wait(timeout=1)
-            yield ImageGenerationEvent(image=b"image", kind="final")
 
     class FakeEmbeddingBackend(BaseEmbeddingModel):
         """Fake embedding backend that marks when it starts and finishes."""
@@ -237,25 +224,18 @@ def test_hub_serializes_streaming_local_runtime_calls_until_consumed(monkeypatch
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         image_future = executor.submit(
-            lambda: list(
-                cast(
-                    Iterator[object],
-                    image_client.images.generate(
-                        model=image_model.model_id,
-                        prompt="observatory",
-                        stream=True,
-                    ),
-                )
-            )
+            image_client.images.generate,
+            model=image_model.model_id,
+            prompt="observatory",
         )
-        assert stream_entered.wait(timeout=1)
+        assert image_generation_entered.wait(timeout=1)
         embedding_future = executor.submit(
             embedding_client.embeddings.create,
             model=embedding_model.model_id,
             input="hello",
         )
         assert not embedding_finished.wait(timeout=0.05)
-        release_stream.set()
+        release_image_generation.set()
         image_future.result()
         embedding_future.result()
 

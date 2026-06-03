@@ -302,34 +302,6 @@ class ImagesResponse:
 
 
 @dataclass(frozen=True, slots=True)
-class ImageGenPartialImageEvent:
-    """Describe a streamed partial image event."""
-
-    b64_json: str
-    background: Literal["transparent", "opaque", "auto"]
-    created_at: int
-    output_format: Literal["png", "webp", "jpeg"]
-    partial_image_index: int
-    quality: Literal["low", "medium", "high", "auto"]
-    size: Literal["1024x1024", "1024x1536", "1536x1024", "auto"]
-    type: str
-
-
-@dataclass(frozen=True, slots=True)
-class ImageGenCompletedEvent:
-    """Describe a streamed completed image event."""
-
-    b64_json: str
-    background: Literal["transparent", "opaque", "auto"]
-    created_at: int
-    output_format: Literal["png", "webp", "jpeg"]
-    quality: Literal["low", "medium", "high", "auto"]
-    size: Literal["1024x1024", "1024x1536", "1536x1024", "auto"]
-    type: str
-    usage: dict[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
 class LocalAudioSpeechResponse:
     """Describe the local OpenAI-compatible speech synthesis response."""
 
@@ -494,32 +466,11 @@ def _encode_image(image: object) -> str:
     return base64.b64encode(payload).decode("ascii")
 
 
-def _normalize_background(background: Any) -> Literal["transparent", "opaque", "auto"]:
-    """Normalize an OpenAI image background value."""
-    if background in ("transparent", "opaque", "auto"):
-        return background
-    return "auto"
-
-
-def _normalize_quality(quality: Any) -> Literal["low", "medium", "high", "auto"]:
-    """Normalize an OpenAI image quality value."""
-    if quality in ("low", "medium", "high", "auto"):
-        return quality
-    return "auto"
-
-
 def _normalize_output_format(output_format: Any) -> Literal["png", "webp", "jpeg"]:
     """Normalize an OpenAI image output format value."""
     if output_format in ("png", "webp", "jpeg"):
         return output_format
     return "png"
-
-
-def _normalize_size(size: Any) -> Literal["1024x1024", "1024x1536", "1536x1024", "auto"]:
-    """Normalize an OpenAI image size value."""
-    if size in ("1024x1024", "1024x1536", "1536x1024", "auto"):
-        return size
-    return "auto"
 
 
 def _backend_image_size(size: Any) -> int:
@@ -623,49 +574,6 @@ def _build_image_response(
     )
 
 
-def _build_partial_image_event(
-    *,
-    image: object,
-    index: int,
-    background: Any = "auto",
-    output_format: Any = "png",
-    quality: Any = "auto",
-    size: Any = "auto",
-) -> ImageGenPartialImageEvent:
-    """Build a streamed partial image event from a local image."""
-    return ImageGenPartialImageEvent(
-        b64_json=_encode_image(image),
-        background=_normalize_background(background),
-        created_at=int(time.time()),
-        output_format=_normalize_output_format(output_format),
-        partial_image_index=index,
-        quality=_normalize_quality(quality),
-        size=_normalize_size(size),
-        type="image_generation.partial_image",
-    )
-
-
-def _build_completed_image_event(
-    *,
-    image: object,
-    background: Any = "auto",
-    output_format: Any = "png",
-    quality: Any = "auto",
-    size: Any = "auto",
-) -> ImageGenCompletedEvent:
-    """Build a streamed completed image event from a local image."""
-    return ImageGenCompletedEvent(
-        b64_json=_encode_image(image),
-        background=_normalize_background(background),
-        created_at=int(time.time()),
-        output_format=_normalize_output_format(output_format),
-        quality=_normalize_quality(quality),
-        size=_normalize_size(size),
-        type="image_generation.completed",
-        usage=_build_zero_image_usage(),
-    )
-
-
 def _normalize_audio_response_format(response_format: Any) -> str:
     """Normalize one local audio response format value."""
     return validate_audio_response_format(None if response_format is None else str(response_format))
@@ -754,22 +662,13 @@ class _ImagesResource:
         style: str | None = None,
         user: str | None = None,
         **kwargs: Any,
-    ) -> ImagesResponse | Iterator[ImageGenPartialImageEvent | ImageGenCompletedEvent]:
-        """Generate or stream an image in the OpenAI SDK response shape."""
-        del model, moderation, output_compression, response_format, style, user, kwargs
+    ) -> ImagesResponse:
+        """Generate an image in the OpenAI SDK response shape."""
+        del model, moderation, output_compression, partial_images, response_format, stream, style, user, kwargs
         if self.local_ai is None:
             raise RuntimeError("No local AI backend is bound to this client.")
         _validate_image_request_n(n)
         _validate_image_request_size(size)
-        if stream:
-            return self._stream_image(
-                prompt=prompt,
-                background=background,
-                output_format=output_format,
-                quality=quality,
-                size=size,
-                partial_images=partial_images,
-            )
         image = self.local_ai.generate_image(prompt=prompt, size=_backend_image_size(size))
         return _build_image_response(
             prompt=prompt,
@@ -779,52 +678,6 @@ class _ImagesResource:
             quality=quality,
             size=size,
         )
-
-    def _stream_image(
-        self,
-        *,
-        prompt: str,
-        background: str | None,
-        output_format: str | None,
-        quality: str | None,
-        size: str | int | None,
-        partial_images: int | None = None,
-    ) -> Iterator[ImageGenPartialImageEvent | ImageGenCompletedEvent]:
-        """Translate local image stream events into OpenAI image stream events."""
-        if self.local_ai is None:
-            raise RuntimeError("No local AI backend is bound to this client.")
-        local_ai = self.local_ai
-        stream_size = _backend_image_size(size)
-        stream_steps = 4
-        intermediate_limit = partial_images if isinstance(partial_images, int) and partial_images >= 0 else None
-        emitted_intermediate = 0
-        local_stream = local_ai.stream_image(prompt=prompt, size=stream_size, steps=stream_steps)
-        try:
-            for index, event in enumerate(local_stream):
-                if event.kind == "final":
-                    yield _build_completed_image_event(
-                        image=event.image,
-                        background=background,
-                        output_format=output_format,
-                        quality=quality,
-                        size=size,
-                    )
-                else:
-                    if intermediate_limit is not None and emitted_intermediate >= intermediate_limit:
-                        continue
-                    yield _build_partial_image_event(
-                        image=event.image,
-                        index=index,
-                        background=background,
-                        output_format=output_format,
-                        quality=quality,
-                        size=size,
-                    )
-                    emitted_intermediate += 1
-        finally:
-            close_stream = getattr(local_stream, "close", None)
-            if callable(close_stream):
-                close_stream()
 
 
 @dataclass
@@ -915,19 +768,10 @@ class _AsyncImagesResource:
         style: str | None = None,
         user: str | None = None,
         **kwargs: Any,
-    ) -> ImagesResponse | AsyncIterator[ImageGenPartialImageEvent | ImageGenCompletedEvent]:
-        """Generate or stream an image in the async OpenAI SDK response shape."""
+    ) -> ImagesResponse:
+        """Generate an image in the async OpenAI SDK response shape."""
         del kwargs
-        if stream:
-            return self._stream_image(
-                prompt=prompt,
-                background=background,
-                output_format=output_format,
-                quality=quality,
-                size=size,
-                partial_images=partial_images,
-            )
-        return cast(ImagesResponse, _ImagesResource(local_ai=self.local_ai).generate(
+        return _ImagesResource(local_ai=self.local_ai).generate(
             prompt=prompt,
             background=background,
             model=model,
@@ -939,56 +783,10 @@ class _AsyncImagesResource:
             quality=quality,
             response_format=response_format,
             size=size,
-            stream=False,
+            stream=stream,
             style=style,
             user=user,
-        ))
-
-    async def _stream_image(
-        self,
-        *,
-        prompt: str,
-        background: str | None,
-        output_format: str | None,
-        quality: str | None,
-        size: str | int | None,
-        partial_images: int | None = None,
-    ) -> AsyncIterator[ImageGenPartialImageEvent | ImageGenCompletedEvent]:
-        """Translate local image stream events into async OpenAI image stream events."""
-        if self.local_ai is None:
-            raise RuntimeError("No local AI backend is bound to this client.")
-        local_ai = self.local_ai
-        stream_size = _backend_image_size(size)
-        stream_steps = 4
-        intermediate_limit = partial_images if isinstance(partial_images, int) and partial_images >= 0 else None
-        emitted_intermediate = 0
-        local_stream = local_ai.stream_image(prompt=prompt, size=stream_size, steps=stream_steps)
-        try:
-            for index, event in enumerate(local_stream):
-                if event.kind == "final":
-                    yield _build_completed_image_event(
-                        image=event.image,
-                        background=background,
-                        output_format=output_format,
-                        quality=quality,
-                        size=size,
-                    )
-                else:
-                    if intermediate_limit is not None and emitted_intermediate >= intermediate_limit:
-                        continue
-                    yield _build_partial_image_event(
-                        image=event.image,
-                        index=index,
-                        background=background,
-                        output_format=output_format,
-                        quality=quality,
-                        size=size,
-                    )
-                    emitted_intermediate += 1
-        finally:
-            close_stream = getattr(local_stream, "close", None)
-            if callable(close_stream):
-                close_stream()
+        )
 
 
 @dataclass

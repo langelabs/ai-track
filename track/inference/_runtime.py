@@ -21,7 +21,6 @@ from track.contracts import (
     BaseImageGenerationModel,
     BaseTranscriptionModel,
     ImageGenerationCallback,
-    ImageGenerationEvent,
     Message,
     SupportsOpenAICompatibility,
     TranscriptionResult,
@@ -595,17 +594,6 @@ class LocalRuntime(SupportsOpenAICompatibility):
                 callback=callback,
                 seed=seed,
             )
-
-    def stream_image(
-        self,
-        prompt: str,
-        size: int = 512,
-        steps: int = 4,
-        seed: int | None = None,
-    ) -> Iterator[ImageGenerationEvent]:
-        """Delegate image progress streaming to the selected image backend."""
-        with self._operation_lock:
-            yield from self._require_image_model().stream_image(prompt=prompt, size=size, steps=steps, seed=seed)
 
     def generate_speech(
         self,

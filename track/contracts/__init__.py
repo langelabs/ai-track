@@ -6,7 +6,7 @@ from ._audio import AudioGenerationResult, BaseAudioModel
 from ._chat import BaseChatLLM, ChatGenerationConfig
 from ._content import AudioPathContentPart, ContentPart, ImagePathContentPart, Message, TextContentPart
 from ._embedding import BaseEmbeddingModel
-from ._image import BaseImageGenerationModel, ImageGenerationCallback, ImageGenerationEvent
+from ._image import BaseImageGenerationModel, ImageGenerationCallback
 from ._models import AiModel, AiModelCapabilities, AiProviderName, InferenceConfig
 from ._protocols import RemoteClientFactory, SupportsOpenAICompatibility
 from ._transcription import BaseTranscriptionModel, TranscriptionResult
@@ -25,7 +25,6 @@ __all__ = [
     "ChatGenerationConfig",
     "ContentPart",
     "ImageGenerationCallback",
-    "ImageGenerationEvent",
     "ImagePathContentPart",
     "InferenceConfig",
     "Message",
