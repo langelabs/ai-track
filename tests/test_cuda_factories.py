@@ -102,9 +102,26 @@ def test_embedding_factory_uses_cuda_backend() -> None:
         model_id="cuda/embedding",
         alias="embedding",
     )
-    sentinel = SimpleNamespace(backend_name="cuda-embedding")
-    with patch("track.inference.embedding.transformers.TransformersEmbeddingModel", return_value=sentinel) as factory:
+    sentinel = SimpleNamespace(backend_name="cuda-embedding-subprocess")
+    with patch("track.inference.embedding.subprocess.SubprocessEmbeddingModel", return_value=sentinel) as factory:
         result = create_embedding_model("cuda", config)
+
+    factory.assert_called_once()
+    assert result is sentinel
+
+
+def test_embedding_factory_keeps_mlx_backend() -> None:
+    from track.contracts import AiModel
+    from track.inference.embedding.models import create_embedding_model
+
+    config = AiModel(
+        provider="local",
+        model_id="mlx/embedding",
+        alias="embedding",
+    )
+    sentinel = SimpleNamespace(backend_name="mlx-embedding")
+    with patch("track.inference.embedding.mlx.MLXEmbeddingModel", return_value=sentinel) as factory:
+        result = create_embedding_model("mlx", config)
 
     factory.assert_called_once()
     assert result is sentinel

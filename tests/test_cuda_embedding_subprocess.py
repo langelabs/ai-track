@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+
+class FakeEmbeddingWorkerProcess:
+    """Provide deterministic worker process state for subprocess wrapper tests."""
+
+    def __init__(self, *, alive: bool = True, exitcode: int | None = None) -> None:
+        """Store fake process state."""
+        self._alive = alive
+        self.exitcode = exitcode
+        self.terminated = False
+        self.joined = False
+
+    def is_alive(self) -> bool:
+        """Return whether the fake process is alive."""
+        return self._alive
+
+    def terminate(self) -> None:
+        """Record worker termination."""
+        self.terminated = True
+        self._alive = False
+
+    def join(self, timeout: float | None = None) -> None:
+        """Record worker join."""
+        del timeout
+        self.joined = True
+
+
+class FakeEmbeddingWorkerConnection:
+    """Provide deterministic parent connection behavior for wrapper tests."""
+
+    def __init__(self, messages: list[dict[str, Any]]) -> None:
+        """Store queued worker messages."""
+        self.messages = messages
+        self.sent: list[dict[str, Any]] = []
+        self.closed = False
+
+    def poll(self, timeout: float | None = None) -> bool:
+        """Return whether a worker message is queued."""
+        del timeout
+        return bool(self.messages)
+
+    def recv(self) -> dict[str, Any]:
+        """Return the next queued worker message."""
+        return self.messages.pop(0)
+
+    def send(self, message: dict[str, Any]) -> None:
+        """Record a message sent by the wrapper."""
+        self.sent.append(message)
+
+    def close(self) -> None:
+        """Record connection close."""
+        self.closed = True
+
+
+def test_subprocess_embedding_model_records_worker_load_failure() -> None:
+    """Worker-reported load failures should become parent-side load errors."""
+    from track.inference.embedding.subprocess import SubprocessEmbeddingModel
+
+    process = FakeEmbeddingWorkerProcess(alive=False, exitcode=1)
+    connection = FakeEmbeddingWorkerConnection(
+        [{"type": "error", "phase": "load", "error": "CUDA embedding model load failed"}]
+    )
+
+    model = SubprocessEmbeddingModel(
+        "google/embeddinggemma-300m",
+        process_factory=lambda **_kwargs: (process, connection),
+    )
+
+    assert model.load_error is not None
+    assert "worker failed during load" in str(model.load_error)
+    assert "CUDA embedding model load failed" in str(model.load_error)
+    assert process.terminated is True
+
+
+def test_subprocess_embedding_model_records_worker_exit_before_ready() -> None:
+    """A worker that dies before ready should produce a deterministic load error."""
+    from track.inference.embedding.subprocess import SubprocessEmbeddingModel
+
+    process = FakeEmbeddingWorkerProcess(alive=False, exitcode=-9)
+    connection = FakeEmbeddingWorkerConnection([])
+
+    model = SubprocessEmbeddingModel(
+        "google/embeddinggemma-300m",
+        process_factory=lambda **_kwargs: (process, connection),
+    )
+
+    assert model.load_error is not None
+    assert "exited before reporting ready" in str(model.load_error)
+    assert "exitcode=-9" in str(model.load_error)
+
+
+def test_subprocess_embedding_model_returns_worker_embeddings(tmp_path: Path) -> None:
+    """Successful worker responses should be returned to embedding callers."""
+    from track.inference.embedding.subprocess import SubprocessEmbeddingModel
+
+    process = FakeEmbeddingWorkerProcess()
+    connection = FakeEmbeddingWorkerConnection(
+        [
+            {"type": "ready"},
+            {"type": "result", "embedding": [1.0, 2.0]},
+            {"type": "result", "embedding": [[3.0], [4.0]]},
+        ]
+    )
+
+    model = SubprocessEmbeddingModel(
+        "google/embeddinggemma-300m",
+        hf_token="hf_token_should_not_be_logged",
+        model_path=tmp_path,
+        process_factory=lambda **_kwargs: (process, connection),
+    )
+
+    assert model.load_error is None
+    assert model.embed("hello") == [1.0, 2.0]
+    assert model.embed(["a", "b"]) == [[3.0], [4.0]]
+    assert connection.sent == [
+        {"type": "embed", "content": "hello"},
+        {"type": "embed", "content": ["a", "b"]},
+    ]
+
+
+def test_subprocess_embedding_model_raises_when_worker_exits_during_embedding() -> None:
+    """A worker death during inference should become a catchable RuntimeError."""
+    from track.inference.embedding.subprocess import SubprocessEmbeddingModel
+
+    process = FakeEmbeddingWorkerProcess(alive=True)
+    connection = FakeEmbeddingWorkerConnection([{"type": "ready"}])
+    model = SubprocessEmbeddingModel(
+        "google/embeddinggemma-300m",
+        process_factory=lambda **_kwargs: (process, connection),
+    )
+    process._alive = False
+    process.exitcode = -9
+
+    with pytest.raises(RuntimeError, match="exited during embedding"):
+        model.embed("hello")

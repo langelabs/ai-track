@@ -23,9 +23,9 @@ def create_embedding_model(
             hf_token=hf_token,
         )
     if backend == "cuda":
-        from track.inference.embedding.transformers import TransformersEmbeddingModel
+        from track.inference.embedding.subprocess import SubprocessEmbeddingModel
 
-        return TransformersEmbeddingModel(
+        return SubprocessEmbeddingModel(
             model_id=config.model_id,
             hf_token=hf_token,
             model_path=model_path,

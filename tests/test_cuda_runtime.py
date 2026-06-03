@@ -494,6 +494,33 @@ def test_local_provider_load_initializes_only_declared_embedding_capability() ->
     create_chat_model.assert_not_called()
 
 
+def test_local_provider_declared_embedding_load_raises_backend_load_error() -> None:
+    """Declared embedding load should raise the actionable backend load failure."""
+    from track.contracts import AiModel, AiModelCapabilities
+    from track.providers import LocalProvider
+
+    model = AiModel(
+        provider="local",
+        model_id="cuda/test-embedding",
+        alias="embedding",
+        capabilities=AiModelCapabilities(embedding_input=True, embedding_output=True),
+    )
+    provider = LocalProvider(model=model, model_path=None, backend="cuda")
+    load_error = RuntimeError(
+        "CUDA embedding model load failed for cuda/test-embedding during model.to(cuda): CUDA out of memory"
+    )
+
+    with patch.object(provider._runtime, "download", return_value=None), patch(
+        "track.inference._runtime.create_embedding_model",
+        return_value=SimpleNamespace(load_error=load_error),
+    ):
+        with pytest.raises(RuntimeError, match="during model.to\\(cuda\\)"):
+            asyncio.run(provider.load())
+
+    assert provider.loaded is False
+    assert provider.get_capability_load_error("embedding_output") == str(load_error)
+
+
 def test_local_provider_reports_declared_image_capability_loaded_after_successful_load() -> None:
     """Declared image readiness should reflect the eagerly initialized image backend."""
     from track.contracts import AiModel, AiModelCapabilities
