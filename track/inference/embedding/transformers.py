@@ -5,13 +5,16 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from track.contracts import BaseEmbeddingModel
+from track.inference.embedding.diagnostics import build_embedding_load_error, collect_embedding_load_diagnostics
 from track.utils.model_storage import resolve_model_location
 from track.utils.runtime import build_missing_optional_dependency_loader, configure_hugging_face_access
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,11 +68,46 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         self.device = "cpu"
         self.runtime = _load_transformers_runtime()
         try:
-            configure_hugging_face_access(self.hf_token)
-            self._configure_device()
+            self._run_load_phase("hugging_face_access", lambda: configure_hugging_face_access(self.hf_token))
+            self._run_load_phase("device_selection", self._configure_device)
             self.tokenizer, self.model = self._build_model()
         except Exception as exc:  # pragma: no cover - optional runtime path
             self.load_error = exc
+
+    def _run_load_phase(self, phase: str, callback: Callable[[], T]) -> T:
+        """Run one embedding load phase with safe diagnostics and logging."""
+        diagnostics = collect_embedding_load_diagnostics(runtime=self.runtime, device=self.device)
+        logger.info(
+            "CUDA embedding load phase started model_id=%s phase=%s %s",
+            self.model_id,
+            phase,
+            diagnostics.format(),
+        )
+        try:
+            result = callback()
+        except Exception as exc:
+            diagnostics = collect_embedding_load_diagnostics(runtime=self.runtime, device=self.device)
+            logger.warning(
+                "CUDA embedding load phase failed model_id=%s phase=%s error=%s %s",
+                self.model_id,
+                phase,
+                exc,
+                diagnostics.format(),
+            )
+            raise build_embedding_load_error(
+                model_id=self.model_id,
+                phase=phase,
+                diagnostics=diagnostics,
+                error=exc,
+            ) from exc
+        diagnostics = collect_embedding_load_diagnostics(runtime=self.runtime, device=self.device)
+        logger.info(
+            "CUDA embedding load phase finished model_id=%s phase=%s %s",
+            self.model_id,
+            phase,
+            diagnostics.format(),
+        )
+        return result
 
     def _configure_device(self) -> None:
         """Select the best execution device for the embedding model."""
@@ -81,17 +119,32 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
     def _build_model(self) -> tuple[Any, Any]:
         """Construct the tokenizer and model for the configured checkpoint."""
         if not hasattr(self.runtime.auto_model, "from_pretrained") or not hasattr(self.runtime.auto_tokenizer, "from_pretrained"):
-            raise RuntimeError("transformers is not available.")
+            diagnostics = collect_embedding_load_diagnostics(runtime=self.runtime, device=self.device)
+            raise build_embedding_load_error(
+                model_id=self.model_id,
+                phase="runtime_import",
+                diagnostics=diagnostics,
+                error=RuntimeError("transformers is not available."),
+            )
         load_kwargs: dict[str, Any] = {"cache_dir": str(self.model_path) if self.model_path is not None else None}
         if self.hf_token is not None:
             load_kwargs["token"] = self.hf_token
-        model_location = resolve_model_location(self.model_id, self.model_path, self.hf_token)
-        tokenizer = self.runtime.auto_tokenizer.from_pretrained(model_location, **load_kwargs)
-        model = self.runtime.auto_model.from_pretrained(model_location, **load_kwargs)
+        model_location = self._run_load_phase(
+            "artifact_resolution",
+            lambda: resolve_model_location(self.model_id, self.model_path, self.hf_token),
+        )
+        tokenizer = self._run_load_phase(
+            "tokenizer",
+            lambda: self.runtime.auto_tokenizer.from_pretrained(model_location, **load_kwargs),
+        )
+        model = self._run_load_phase(
+            "model",
+            lambda: self.runtime.auto_model.from_pretrained(model_location, **load_kwargs),
+        )
         if hasattr(model, "to"):
-            model = model.to(self.device)
+            model = self._run_load_phase(f"model.to({self.device})", lambda: model.to(self.device))
         if hasattr(model, "eval"):
-            model.eval()
+            self._run_load_phase("model.eval", model.eval)
         return tokenizer, model
 
     def _ensure_ready(self) -> None:

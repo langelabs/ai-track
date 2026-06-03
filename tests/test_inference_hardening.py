@@ -9,6 +9,194 @@ from typing import cast
 import pytest
 
 
+class _FakeEmbeddingTokenizerFactory:
+    """Capture tokenizer load calls for embedding diagnostics tests."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        """Store the optional load failure."""
+        self.error = error
+
+    def from_pretrained(self, *_args: object, **_kwargs: object) -> object:
+        """Return a fake tokenizer or raise the configured failure."""
+        if self.error is not None:
+            raise self.error
+        return SimpleNamespace()
+
+
+class _FakeEmbeddingModelFactory:
+    """Capture model load calls for embedding diagnostics tests."""
+
+    def __init__(self, *, model: object | None = None, error: Exception | None = None) -> None:
+        """Store the fake model or optional load failure."""
+        self.model = model if model is not None else SimpleNamespace(eval=lambda: None)
+        self.error = error
+
+    def from_pretrained(self, *_args: object, **_kwargs: object) -> object:
+        """Return a fake model or raise the configured failure."""
+        if self.error is not None:
+            raise self.error
+        return self.model
+
+
+class _FakeCudaDiagnostics:
+    """Provide deterministic CUDA metadata for embedding diagnostics tests."""
+
+    def __init__(self, *, available: bool = True) -> None:
+        """Store CUDA availability."""
+        self.available = available
+
+    def is_available(self) -> bool:
+        """Return whether fake CUDA is available."""
+        return self.available
+
+    def get_device_name(self, *_args: object) -> str:
+        """Return a deterministic fake CUDA device name."""
+        return "NVIDIA Test GPU"
+
+    def mem_get_info(self, *_args: object) -> tuple[int, int]:
+        """Return deterministic free and total CUDA memory values."""
+        return (123456, 654321)
+
+
+class _FakeTorchDiagnostics:
+    """Provide deterministic torch metadata for embedding diagnostics tests."""
+
+    __version__ = "2.8.0"
+    cuda = _FakeCudaDiagnostics()
+    version = SimpleNamespace(cuda="12.8")
+
+
+def test_transformers_embedding_load_logs_successful_phases(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CUDA embedding load should emit phase breadcrumbs without real CUDA."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    class FakeModel:
+        """Provide successful ``to`` and ``eval`` methods."""
+
+        def to(self, device: str) -> "FakeModel":
+            """Return self after receiving the selected device."""
+            assert device == "cuda"
+            return self
+
+        def eval(self) -> None:
+            """Simulate eval mode setup."""
+
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(model=FakeModel()),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    with caplog.at_level("INFO", logger="track.inference.embedding.transformers"):
+        model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+
+    assert model.load_error is None
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("phase=tokenizer" in message for message in messages)
+    assert any("phase=model" in message for message in messages)
+    assert any("phase=model.to(cuda)" in message for message in messages)
+    assert any("phase=model.eval" in message for message in messages)
+
+
+def test_transformers_embedding_tokenizer_failure_names_phase(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tokenizer load failures should include the failing load phase."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(error=RuntimeError("tokenizer exploded")),
+        torch=_FakeTorchDiagnostics,
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+
+    assert model.load_error is not None
+    message = str(model.load_error)
+    assert "during tokenizer" in message
+    assert "google/embeddinggemma-300m" in message
+    assert "tokenizer exploded" in message
+
+
+def test_transformers_embedding_model_failure_names_phase(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model load failures should include the failing load phase."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(error=RuntimeError("model exploded")),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+
+    assert model.load_error is not None
+    message = str(model.load_error)
+    assert "during model" in message
+    assert "model exploded" in message
+
+
+def test_transformers_embedding_cuda_move_failure_includes_safe_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CUDA move failures should expose device diagnostics without leaking tokens."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    class FailingModel:
+        """Raise during CUDA placement."""
+
+        def to(self, _device: str) -> object:
+            """Raise the representative CUDA placement failure."""
+            raise RuntimeError("CUDA out of memory")
+
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(model=FailingModel()),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel(
+        "google/embeddinggemma-300m",
+        hf_token="hf_secret_should_not_leak",
+    )
+
+    assert model.load_error is not None
+    message = str(model.load_error)
+    assert "during model.to(cuda)" in message
+    assert "CUDA out of memory" in message
+    assert "device=cuda" in message
+    assert "torch=2.8.0" in message
+    assert "torch_cuda=12.8" in message
+    assert "cuda_available=True" in message
+    assert "cuda_device=NVIDIA Test GPU" in message
+    assert "cuda_memory_free=123456" in message
+    assert "cuda_memory_total=654321" in message
+    assert "hf_secret_should_not_leak" not in message
+    assert "HF_TOKEN" not in message
+
+
 def test_llama_cpp_chat_uses_first_sorted_gguf_and_chat_completion(tmp_path: Path) -> None:
     """llama.cpp chat should load the first sorted GGUF file and use native chat completion."""
     from track.contracts import AiModel, InferenceConfig, Message
