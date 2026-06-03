@@ -271,6 +271,54 @@ def test_mlx_chat_wraps_multimodal_broadcast_shape_failures() -> None:
         chat.chat([Message.user("describe", image_path="/tmp/image.png")])
 
 
+def test_mlx_chat_multimodal_alignment_error_mentions_expanded_image_sequence() -> None:
+    """Short multimodal prompts should report image-expanded sequence mismatches clearly."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    class FakeTokenizer:
+        model_max_length = 8192
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return the short prompt token count from the client upload failure."""
+            return list(range(72))
+
+    def fake_generate(
+        *_args: object,
+        prefill_step_size: int | None = None,
+        **_kwargs: object,
+    ) -> object:
+        """Raise the low-level Gemma 4 broadcast failure reported by MLX-VLM."""
+        assert prefill_step_size is None
+        raise ValueError(
+            "[broadcast_shapes] Shapes (1,72,42,256) and (1,346,42,256) cannot be broadcast."
+        )
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(config=SimpleNamespace(image_token_id=258880)),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=fake_generate,
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(
+            provider="local",
+            model_id="mlx-community/gemma-4-e4b-it-8bit",
+            alias="chat",
+        ),
+        runtime=runtime,
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        chat.chat([Message.user("describe", image_path="/tmp/image.png")])
+
+    message = str(error.value)
+    assert "image-expanded prompt sequence" in message
+    assert "Reduce chat history" not in message
+
+
 def test_mlx_chat_stream_wraps_multimodal_broadcast_shape_failures() -> None:
     """Streaming MLX-VLM broadcast errors should be wrapped during iteration."""
     from track.contracts import AiModel, Message
@@ -525,11 +573,14 @@ def test_diffusers_uses_torch_generator_only_for_explicit_seed() -> None:
     assert created_generators == [("cuda", 5)]
 
 
-def test_diffusers_enables_cpu_offload_for_configured_device() -> None:
+def test_diffusers_enables_cpu_offload_for_configured_device(tmp_path: Path) -> None:
     """Diffusers CPU offload should target the backend device explicitly."""
     from track.inference.image.diffusers import DiffusersFluxImageModel
 
     captured: dict[str, object] = {}
+    model_root = tmp_path / "models"
+    local_dir = model_root / "test/image"
+    local_dir.mkdir(parents=True)
 
     class FakePipeline:
         """Capture offload configuration without importing the real diffusers runtime."""
@@ -542,8 +593,9 @@ def test_diffusers_enables_cpu_offload_for_configured_device() -> None:
         """Provide the diffusers pipeline constructor used by the backend."""
 
         @staticmethod
-        def from_pretrained(*_args: object, **kwargs: object) -> FakePipeline:
+        def from_pretrained(*args: object, **kwargs: object) -> FakePipeline:
             """Return a fake pipeline and record load kwargs."""
+            captured["load_args"] = args
             captured["load_kwargs"] = kwargs
             return FakePipeline()
 
@@ -558,7 +610,12 @@ def test_diffusers_enables_cpu_offload_for_configured_device() -> None:
     sys.modules["torch"] = fake_torch
     sys.modules["diffusers"] = fake_diffusers
     try:
-        model = DiffusersFluxImageModel(model_id="test/image", device="cuda")
+        model = DiffusersFluxImageModel(
+            model_id="test/image",
+            device="cuda",
+            hf_token="secret",
+            model_path=model_root,
+        )
     finally:
         if previous_torch is None:
             sys.modules.pop("torch", None)
@@ -571,7 +628,78 @@ def test_diffusers_enables_cpu_offload_for_configured_device() -> None:
 
     assert model.pipeline is not None
     assert captured["device"] == "cuda"
-    assert captured["load_kwargs"] == {"torch_dtype": "bfloat16", "cache_dir": None}
+    assert captured["load_args"] == (str(local_dir),)
+    assert captured["load_kwargs"] == {
+        "torch_dtype": "bfloat16",
+        "cache_dir": str(model_root),
+        "token": "secret",
+    }
+
+
+def test_diffusers_uses_cached_expanded_local_artifact_without_snapshot_download(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Cached diffusers artifacts should load from expanded local paths without Hub resolution."""
+    from track.inference.image.diffusers import DiffusersFluxImageModel
+
+    captured: dict[str, object] = {}
+    model_root = tmp_path / "models"
+    model_id = "black-forest-labs/FLUX.2-klein-4B"
+    local_dir = model_root / model_id
+    local_dir.mkdir(parents=True)
+
+    def fake_snapshot_download(*_args: object, **_kwargs: object) -> str:
+        """Fail if cached artifacts still ask Hugging Face to resolve."""
+        raise AssertionError("snapshot_download should not be called for cached diffusers artifacts")
+
+    class FakePipeline:
+        """Capture offload configuration without importing the real diffusers runtime."""
+
+        def enable_model_cpu_offload(self, *, device: str) -> None:
+            """Record the configured offload device."""
+            captured["device"] = device
+
+    class FakeFlux2KleinPipeline:
+        """Provide the diffusers pipeline constructor used by the backend."""
+
+        @staticmethod
+        def from_pretrained(*args: object, **kwargs: object) -> FakePipeline:
+            """Return a fake pipeline and record load arguments."""
+            captured["load_args"] = args
+            captured["load_kwargs"] = kwargs
+            return FakePipeline()
+
+    import sys
+
+    previous_torch = sys.modules.get("torch")
+    previous_diffusers = sys.modules.get("diffusers")
+    fake_torch = types.ModuleType("torch")
+    setattr(fake_torch, "bfloat16", "bfloat16")
+    fake_diffusers = types.ModuleType("diffusers")
+    setattr(fake_diffusers, "Flux2KleinPipeline", FakeFlux2KleinPipeline)
+    sys.modules["torch"] = fake_torch
+    sys.modules["diffusers"] = fake_diffusers
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(snapshot_download=fake_snapshot_download))
+    try:
+        model = DiffusersFluxImageModel(
+            model_id=model_id,
+            device="cuda",
+            model_path=model_root,
+        )
+    finally:
+        if previous_torch is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = previous_torch
+        if previous_diffusers is None:
+            sys.modules.pop("diffusers", None)
+        else:
+            sys.modules["diffusers"] = previous_diffusers
+
+    assert model.pipeline is not None
+    assert captured["device"] == "cuda"
+    assert captured["load_args"] == (str(local_dir),)
+    assert captured["load_kwargs"] == {"torch_dtype": "bfloat16", "cache_dir": str(model_root)}
 
 
 def test_diffusers_pipeline_runs_under_generation_lock() -> None:

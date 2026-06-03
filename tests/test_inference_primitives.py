@@ -162,8 +162,8 @@ def test_chat_backends_coalesce_nullable_inference_config_fields() -> None:
     assert vllm_chat.generation_config.verbose is False
 
 
-def test_mlx_chat_multimodal_prompt_uses_single_pass_prefill() -> None:
-    """MLX-VLM multimodal generation should avoid chunked prefill when token count is known."""
+def test_mlx_chat_multimodal_prompt_disables_chunked_prefill() -> None:
+    """MLX-VLM multimodal generation should avoid chunked prefill with expanded image embeddings."""
     from track.contracts import AiModel, Message
     from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
 
@@ -200,11 +200,11 @@ def test_mlx_chat_multimodal_prompt_uses_single_pass_prefill() -> None:
     )
 
     assert chat.chat([Message.user("describe", image_path="/tmp/image.png")]).text() == "ok"
-    assert captured_kwargs["prefill_step_size"] == 5293
+    assert captured_kwargs["prefill_step_size"] is None
 
 
-def test_mlx_chat_prefill_is_general_for_non_gemma_multimodal_models() -> None:
-    """Generic multimodal configs should receive single-pass prefill without Gemma-only name checks."""
+def test_mlx_chat_prefill_is_disabled_for_non_gemma_multimodal_models() -> None:
+    """Generic multimodal configs should also disable chunked prefill."""
     from track.contracts import AiModel, Message
     from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
 
@@ -237,7 +237,7 @@ def test_mlx_chat_prefill_is_general_for_non_gemma_multimodal_models() -> None:
     )
 
     assert chat.chat([Message.user("describe", image_path="/tmp/image.png")]).text() == "ok"
-    assert captured_kwargs["prefill_step_size"] == 3
+    assert captured_kwargs["prefill_step_size"] is None
 
 
 def test_mlx_chat_text_only_does_not_force_prefill() -> None:

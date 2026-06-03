@@ -21,6 +21,7 @@ def create_image_generation_model(
         return DiffusersFluxImageModel(
             model_id=config.model_id,
             device=device,
+            hf_token=hf_token,
             model_path=model_path,
         )
     if backend == "mlx":

@@ -10,6 +10,7 @@ from threading import Lock
 from typing import Any
 
 from track.contracts import BaseImageGenerationModel, ImageGenerationCallback
+from track.utils import resolve_model_location
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +24,13 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         self,
         model_id: str,
         device: str,
+        hf_token: str | None = None,
         model_path: str | Path | None = None,
     ) -> None:
         """Load the configured diffusers pipeline."""
         self.model_id = model_id
         self.device = device
+        self.hf_token = hf_token
         self.model_path = Path(model_path) if model_path is not None else None
         self.load_error: Exception | None = None
         self.pipeline: Any | None = None
@@ -118,10 +121,16 @@ class DiffusersFluxImageModel(BaseImageGenerationModel):
         import torch  # type: ignore[import-not-found]
         from diffusers import Flux2KleinPipeline  # type: ignore[import-not-found]
 
+        load_kwargs: dict[str, Any] = {
+            "torch_dtype": torch.bfloat16,
+            "cache_dir": str(self.model_path) if self.model_path is not None else None,
+        }
+        if self.hf_token is not None:
+            load_kwargs["token"] = self.hf_token
+        model_location = resolve_model_location(self.model_id, self.model_path, self.hf_token)
         pipeline = Flux2KleinPipeline.from_pretrained(
-            self.model_id,
-            torch_dtype=torch.bfloat16,
-            cache_dir=str(self.model_path) if self.model_path is not None else None,
+            model_location,
+            **load_kwargs,
         )
         pipeline.enable_model_cpu_offload(device=self.device)
         return pipeline

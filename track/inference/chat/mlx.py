@@ -432,18 +432,13 @@ class MLXChatLLM(BaseChatLLM):
         prefill_supported = _supports_keyword(generator, "prefill_step_size")
         image_count = 1 if image_path is not None else 0
         audio_count = 1 if audio_path is not None else 0
-        prefill_step_size = (
-            prompt_token_count
-            if prefill_supported and prompt_token_count is not None and (image_count > 0 or audio_count > 0)
-            else None
-        )
         return MLXPromptDiagnostics(
             prompt_token_count=prompt_token_count,
             context_limit=_resolve_context_limit(model, processor),
             image_count=image_count,
             audio_count=audio_count,
             shape_features=_shape_sensitive_features(model, processor),
-            prefill_step_size=prefill_step_size,
+            prefill_step_size=None,
             prefill_supported=prefill_supported,
         )
 
@@ -479,6 +474,8 @@ class MLXChatLLM(BaseChatLLM):
         }
         if diagnostics.prefill_step_size is not None:
             kwargs["prefill_step_size"] = diagnostics.prefill_step_size
+        elif diagnostics.prefill_supported and diagnostics.is_multimodal:
+            kwargs["prefill_step_size"] = None
         return kwargs
 
     def _build_alignment_error(self, diagnostics: MLXPromptDiagnostics) -> RuntimeError:
@@ -493,6 +490,7 @@ class MLXChatLLM(BaseChatLLM):
             f"prompt_tokens={prompt_tokens}; context_limit={context_limit}; "
             f"image_count={diagnostics.image_count}; audio_count={diagnostics.audio_count}; "
             f"prefill_step_size={prefill}; prefill_supported={diagnostics.prefill_supported}; "
-            f"shape_features={features}. Reduce chat history or input size and retry. "
-            "If this persists with short prompts, update the installed MLX-VLM runtime."
+            f"shape_features={features}. The MLX-VLM runtime reported a mismatch between the "
+            "rendered text prompt and the image-expanded prompt sequence. Update the installed "
+            "MLX-VLM runtime or switch this model to a compatible vision backend."
         )
