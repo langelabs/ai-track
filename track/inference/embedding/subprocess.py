@@ -10,7 +10,7 @@ from typing import Any, Callable, Protocol
 
 from track.contracts import BaseEmbeddingModel
 
-DEFAULT_WORKER_TIMEOUT_SECONDS = 120.0
+DEFAULT_WORKER_TIMEOUT_SECONDS = 600.0
 EmbeddingWorkerMessage = dict[str, Any]
 
 
@@ -199,7 +199,12 @@ class SubprocessEmbeddingModel(BaseEmbeddingModel):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 last_phase = f"; last_phase={self.last_load_phase}" if self.last_load_phase is not None else ""
-                raise RuntimeError(f"CUDA embedding worker timed out while {phase} for {self.model_id}{last_phase}")
+                raise RuntimeError(
+                    f"CUDA embedding worker timed out while {phase} for {self.model_id}{last_phase}. "
+                    "First-time SentenceTransformer CUDA loads can take several minutes while artifacts are "
+                    "validated and weights are moved to GPU. Increase "
+                    "InferenceConfig.cuda_embedding_startup_timeout_seconds for slower hosts."
+                )
             if self._connection.poll(min(0.1, remaining)):
                 try:
                     message = self._connection.recv()

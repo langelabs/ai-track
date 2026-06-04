@@ -135,6 +135,14 @@ def test_subprocess_embedding_model_timeout_includes_last_loading_phase() -> Non
     assert model.load_error is not None
     assert "timed out while reporting ready" in str(model.load_error)
     assert "last_phase=sentence_transformer.to(cuda)" in str(model.load_error)
+    assert "cuda_embedding_startup_timeout_seconds" in str(model.load_error)
+
+
+def test_default_cuda_embedding_startup_timeout_allows_slow_sentence_transformer_loads() -> None:
+    """The default startup budget should tolerate slow first-time CUDA ST loading."""
+    from track.inference.embedding.subprocess import DEFAULT_WORKER_TIMEOUT_SECONDS
+
+    assert DEFAULT_WORKER_TIMEOUT_SECONDS >= 600.0
 
 
 def test_subprocess_embedding_model_returns_worker_embeddings(tmp_path: Path) -> None:
