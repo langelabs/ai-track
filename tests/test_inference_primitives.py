@@ -396,11 +396,12 @@ def test_mlx_embedding_fallback_error_is_actionable() -> None:
 
 
 def test_mlx_embedding_ready_error_includes_original_load_failure() -> None:
+    """MLX embedding readiness errors should preserve the original load failure."""
     from track.inference.embedding.mlx import MLXEmbeddingModel
 
     model = MLXEmbeddingModel(model_id="test/embedding-model")
 
-    with pytest.raises(RuntimeError, match="mlx"):
+    with pytest.raises(RuntimeError, match="MLX"):
         model.embed("hello")
 
 

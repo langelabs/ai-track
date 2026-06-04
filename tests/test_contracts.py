@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from pydantic import ValidationError
 
@@ -45,7 +47,7 @@ def test_content_parts_validate_literal_types_and_audio_formats() -> None:
     assert AudioPathContentPart(audio_path="/tmp/a.wav", audio_format="mp3").audio_format == "mp3"
 
     with pytest.raises(ValidationError):
-        AudioPathContentPart(audio_path="/tmp/a.flac", audio_format="flac")  # type: ignore[arg-type]
+        AudioPathContentPart(audio_path="/tmp/a.flac", audio_format=cast(Any, "flac"))
 
 
 def test_model_metadata_defaults_and_optional_inference_config_values() -> None:
@@ -55,6 +57,7 @@ def test_model_metadata_defaults_and_optional_inference_config_values() -> None:
         max_tokens=None,
         temperature=0.25,
         embedding_batch_size=4,
+        embedding_prompt_name="query",
         trust_remote_code=False,
     )
     model = AiModel(
@@ -77,4 +80,10 @@ def test_model_metadata_defaults_and_optional_inference_config_values() -> None:
     }
     assert model.inference_config is config
     assert model.provider == "local"
+    assert model.inference_config.embedding_prompt_name == "query"
 
+
+def test_inference_config_rejects_unknown_embedding_prompt_names() -> None:
+    """Embedding prompt names should be limited to supported SentenceTransformer modes."""
+    with pytest.raises(ValidationError):
+        InferenceConfig(embedding_prompt_name=cast(Any, "unsupported"))

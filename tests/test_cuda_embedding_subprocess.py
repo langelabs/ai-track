@@ -124,6 +124,31 @@ def test_subprocess_embedding_model_returns_worker_embeddings(tmp_path: Path) ->
     ]
 
 
+def test_subprocess_embedding_model_passes_prompt_name_to_worker(tmp_path: Path) -> None:
+    """Configured embedding prompt names should be passed into the CUDA worker."""
+    from track.inference.embedding.subprocess import SubprocessEmbeddingModel
+
+    process = FakeEmbeddingWorkerProcess()
+    connection = FakeEmbeddingWorkerConnection([{"type": "ready"}])
+    captured_kwargs: dict[str, Any] = {}
+
+    def fake_process_factory(**kwargs: Any) -> tuple[FakeEmbeddingWorkerProcess, FakeEmbeddingWorkerConnection]:
+        """Capture worker startup kwargs."""
+        captured_kwargs.update(kwargs)
+        return process, connection
+
+    model = SubprocessEmbeddingModel(
+        "google/embeddinggemma-300m",
+        hf_token="hf_token_should_not_be_logged",
+        model_path=tmp_path,
+        embedding_prompt_name="document",
+        process_factory=fake_process_factory,
+    )
+
+    assert model.load_error is None
+    assert captured_kwargs["embedding_prompt_name"] == "document"
+
+
 def test_subprocess_embedding_model_raises_when_worker_exits_during_embedding() -> None:
     """A worker death during inference should become a catchable RuntimeError."""
     from track.inference.embedding.subprocess import SubprocessEmbeddingModel

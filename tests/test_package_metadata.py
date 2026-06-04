@@ -43,6 +43,14 @@ def test_cuda_extra_requires_transformers_with_gemma4_support() -> None:
     assert any(dependency.startswith("transformers>=5.5") for dependency in cuda_dependencies)
 
 
+def test_cuda_extra_installs_sentence_transformers_for_embeddinggemma() -> None:
+    """Ensure the CUDA extra installs Sentence Transformers for EmbeddingGemma."""
+    project_data = _load_pyproject()["project"]
+    cuda_dependencies = project_data["optional-dependencies"]["cuda"]
+
+    assert any(dependency.startswith("sentence-transformers>=5.0") for dependency in cuda_dependencies)
+
+
 def test_cuda_extra_installs_llama_cpp_python() -> None:
     """Ensure the CUDA extra installs the preferred llama.cpp chat backend."""
     project_data = _load_pyproject()["project"]

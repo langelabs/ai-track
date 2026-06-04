@@ -257,12 +257,16 @@ apps do not register unrelated modalities and accidentally boot unused CUDA
 backends:
 
 ```python
-from track.contracts import AiModel, AiModelCapabilities
+from track.contracts import AiModel, AiModelCapabilities, InferenceConfig
 
 embedding_model = AiModel(
     provider="local",
-    model_id="Qwen/Qwen3-Embedding-0.6B",
-    alias="qwen-embedding",
+    model_id="google/embeddinggemma-300m",
+    alias="embeddinggemma",
+    inference_config=InferenceConfig(
+        # Use "query" for search queries or "document" for indexed content.
+        embedding_prompt_name="query",
+    ),
     capabilities=AiModelCapabilities(
         embedding_input=True,
         embedding_output=True,

@@ -203,6 +203,37 @@ def test_local_runtime_uses_configured_embedding_batch_size() -> None:
     assert [len(call) for call in backend.calls] == [3, 3, 1]
 
 
+def test_local_runtime_passes_embedding_prompt_name_to_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Embedding backend construction should receive configured prompt names."""
+    from track.contracts import AiModel, AiModelCapabilities, InferenceConfig
+    from track.inference import _runtime as runtime_module
+    from track.providers import LocalProvider
+
+    captured_args: tuple[object, ...] | None = None
+
+    def fake_create_embedding_model(*args: object, **kwargs: object) -> object:
+        """Capture embedding factory arguments."""
+        del kwargs
+        nonlocal captured_args
+        captured_args = args
+        return object()
+
+    monkeypatch.setattr(runtime_module, "create_embedding_model", fake_create_embedding_model)
+    model = AiModel(
+        provider="local",
+        model_id="cuda/test-embedding",
+        alias="embedding",
+        inference_config=InferenceConfig(embedding_prompt_name="document"),
+        capabilities=AiModelCapabilities(embedding_input=True, embedding_output=True),
+    )
+    provider = LocalProvider(model=model, model_path=None, backend="cuda")
+
+    provider._runtime._ensure_embedding_loaded()
+
+    assert captured_args is not None
+    assert captured_args[1] is model
+
+
 def test_local_runtime_rejects_invalid_embedding_batch_size() -> None:
     """Embedding batching should reject non-positive model configuration values."""
     from track.contracts import AiModel, BaseEmbeddingModel, InferenceConfig

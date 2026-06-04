@@ -110,6 +110,25 @@ def test_embedding_factory_uses_cuda_backend() -> None:
     assert result is sentinel
 
 
+def test_embedding_factory_passes_configured_prompt_name_to_cuda_backend() -> None:
+    from track.contracts import AiModel, InferenceConfig
+    from track.inference.embedding.models import create_embedding_model
+
+    config = AiModel(
+        provider="local",
+        model_id="cuda/embedding",
+        alias="embedding",
+        inference_config=InferenceConfig(embedding_prompt_name="query"),
+    )
+    sentinel = SimpleNamespace(backend_name="cuda-embedding-subprocess")
+    with patch("track.inference.embedding.subprocess.SubprocessEmbeddingModel", return_value=sentinel) as factory:
+        result = create_embedding_model("cuda", config)
+
+    factory.assert_called_once()
+    assert factory.call_args.kwargs["embedding_prompt_name"] == "query"
+    assert result is sentinel
+
+
 def test_embedding_factory_keeps_mlx_backend() -> None:
     from track.contracts import AiModel
     from track.inference.embedding.models import create_embedding_model
