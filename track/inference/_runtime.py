@@ -66,7 +66,11 @@ def _is_capability_enabled(model: AiModel, *capability_names: str) -> bool:
     return any(bool(getattr(capabilities, capability_name)) for capability_name in capability_names)
 
 
-def _declared_required_components(capabilities: AiModelCapabilities | None) -> set[str]:
+def _declared_required_components(
+    capabilities: AiModelCapabilities | None,
+    *,
+    backend: Literal["cuda", "mlx"] | None = None,
+) -> set[str]:
     """Return the explicitly declared backend components that should load eagerly."""
     if capabilities is None:
         return set()
@@ -80,12 +84,16 @@ def _declared_required_components(capabilities: AiModelCapabilities | None) -> s
         required_components.add("image")
     if capabilities.audio_output:
         required_components.add("audio")
-    if capabilities.audio_input:
+    if capabilities.audio_input and backend != "mlx":
         required_components.add("transcription")
     return required_components
 
 
-def _components_for_capability(capability: LocalModelCapability) -> tuple[LocalRuntimeComponent, ...]:
+def _components_for_capability(
+    capability: LocalModelCapability,
+    *,
+    backend: Literal["cuda", "mlx"] | None = None,
+) -> tuple[LocalRuntimeComponent, ...]:
     """Return backend components required for one declared model capability."""
     if capability in {"embedding_input", "embedding_output"}:
         return ("embedding",)
@@ -96,6 +104,8 @@ def _components_for_capability(capability: LocalModelCapability) -> tuple[LocalR
     if capability == "audio_output":
         return ("audio",)
     if capability == "audio_input":
+        if backend == "mlx":
+            return ("chat",)
         return ("chat", "transcription")
     raise ValueError(f"Unsupported local model capability: {capability}")
 
@@ -206,7 +216,7 @@ class LocalRuntime(SupportsOpenAICompatibility):
         self._artifact_download_locks: defaultdict[str, Lock] = defaultdict(Lock)
         self._image_load_attempted = False
         self._component_load_errors: dict[str, Exception] = {}
-        self._required_components = _declared_required_components(model.capabilities)
+        self._required_components = _declared_required_components(model.capabilities, backend=self.backend)
 
     def _note_component_load_error(self, component_name: str, error: Exception | None) -> None:
         """Record or clear one component initialization error."""
@@ -285,11 +295,14 @@ class LocalRuntime(SupportsOpenAICompatibility):
 
     def is_capability_loaded(self, capability: LocalModelCapability) -> bool:
         """Return whether every backend required for one capability is loaded."""
-        return all(self.is_component_loaded(component_name) for component_name in _components_for_capability(capability))
+        return all(
+            self.is_component_loaded(component_name)
+            for component_name in _components_for_capability(capability, backend=self.backend)
+        )
 
     def get_capability_load_error(self, capability: LocalModelCapability) -> str | None:
         """Return the first load error message for one capability, if any."""
-        for component_name in _components_for_capability(capability):
+        for component_name in _components_for_capability(capability, backend=self.backend):
             error = self.get_component_load_error(component_name)
             if error is not None:
                 return error

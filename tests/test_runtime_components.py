@@ -56,6 +56,27 @@ def test_capability_helpers_map_declared_modalities_to_components() -> None:
         _components_for_capability("video_output")  # type: ignore[arg-type]
 
 
+def test_capability_helpers_treat_mlx_audio_input_as_native_chat() -> None:
+    """MLX native audio chat should not require a separate transcription component."""
+    capabilities = AiModelCapabilities(audio_input=True, text_output=True)
+
+    assert _declared_required_components(capabilities, backend="mlx") == {"chat"}
+    assert _components_for_capability("audio_input", backend="mlx") == ("chat",)
+    assert _components_for_capability("audio_input", backend="cuda") == ("chat", "transcription")
+
+
+def test_local_runtime_audio_input_readiness_is_backend_aware() -> None:
+    """Audio input capability readiness should reflect native MLX chat support."""
+    capabilities = AiModelCapabilities(audio_input=True, text_output=True)
+    mlx_runtime = LocalRuntime(_model_with_capabilities(capabilities), backend="mlx")
+    cuda_runtime = LocalRuntime(_model_with_capabilities(capabilities), backend="cuda")
+    mlx_runtime.chat_llm = SimpleNamespace(load_error=None)
+    cuda_runtime.chat_llm = SimpleNamespace(load_error=None)
+
+    assert mlx_runtime.is_capability_loaded("audio_input") is True
+    assert cuda_runtime.is_capability_loaded("audio_input") is False
+
+
 def test_capability_helpers_treat_unspecified_capabilities_as_enabled_but_not_eager() -> None:
     """Unspecified capabilities should preserve legacy lazy loading behavior."""
     model = _model_with_capabilities(None)

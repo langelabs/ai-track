@@ -18,11 +18,12 @@ from track.contracts import (
 
 def test_message_helper_constructors_build_strict_frozen_messages() -> None:
     """Message helpers should build immutable messages with normalized text extraction."""
-    user = Message.user("hello", image_path="/tmp/image.png")
+    user = Message.user("hello", image_path="/tmp/image.png", audio_path="/tmp/audio.wav")
 
     assert user.role == "user"
     assert user.content == [
         ImagePathContentPart(image_path="/tmp/image.png"),
+        AudioPathContentPart(audio_path="/tmp/audio.wav"),
         TextContentPart(text="hello"),
     ]
     assert user.text() == "hello"

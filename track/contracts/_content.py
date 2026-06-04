@@ -59,11 +59,13 @@ class Message(BaseModel):
         return self
 
     @classmethod
-    def user(cls, text: str, image_path: str | None = None) -> "Message":
-        """Build a user message from text and an optional image path."""
+    def user(cls, text: str, image_path: str | None = None, audio_path: str | None = None) -> "Message":
+        """Build a user message from text and optional image or audio paths."""
         content: list[ContentPart] = []
         if image_path is not None:
             content.append(ImagePathContentPart(image_path=image_path))
+        if audio_path is not None:
+            content.append(AudioPathContentPart(audio_path=audio_path))
         if text:
             content.append(TextContentPart(text=text))
         return cls(role="user", content=content)

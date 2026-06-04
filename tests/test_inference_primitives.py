@@ -420,6 +420,111 @@ def test_mlx_chat_callable_without_prefill_support_still_runs() -> None:
     assert "prefill_step_size" not in captured_kwargs
 
 
+def test_mlx_chat_passes_native_audio_input_to_generation() -> None:
+    """MLX chat should render audio tokens and forward native audio paths to generation."""
+    from track.contracts import AiModel, AudioPathContentPart, Message, TextContentPart
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    captured_template_kwargs: dict[str, object] = {}
+    captured_generate_kwargs: dict[str, object] = {}
+
+    class FakeTokenizer:
+        model_max_length = 4096
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return a known prompt token count."""
+            return [1, 2, 3]
+
+    def fake_apply_chat_template(**kwargs: object) -> str:
+        """Record prompt rendering kwargs for audio assertions."""
+        captured_template_kwargs.update(kwargs)
+        return "rendered audio prompt"
+
+    def fake_generate(*_args: object, **kwargs: object) -> SimpleNamespace:
+        """Record generation kwargs for audio assertions."""
+        captured_generate_kwargs.update(kwargs)
+        return SimpleNamespace(text="ok")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(config=SimpleNamespace(model_type="qwen3_omni", audio_token_id=258881)),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=fake_generate,
+        apply_chat_template=fake_apply_chat_template,
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/audio-chat", alias="chat"),
+        runtime=runtime,
+    )
+    message = Message(
+        role="user",
+        content=[
+            AudioPathContentPart(audio_path="/tmp/audio.wav"),
+            TextContentPart(text="summarize the audio"),
+        ],
+    )
+
+    assert chat.chat([message]).text() == "ok"
+    assert captured_template_kwargs["num_audios"] == 1
+    assert captured_generate_kwargs["audio"] == ["/tmp/audio.wav"]
+    assert captured_generate_kwargs["image"] is None
+    assert captured_generate_kwargs["prefill_step_size"] is None
+
+
+def test_mlx_stream_chat_passes_native_audio_input_to_generation() -> None:
+    """Streaming MLX chat should forward native audio paths like non-streaming chat."""
+    from track.contracts import AiModel, AudioPathContentPart, Message, TextContentPart
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    captured_template_kwargs: dict[str, object] = {}
+    captured_stream_kwargs: dict[str, object] = {}
+
+    class FakeTokenizer:
+        model_max_length = 4096
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return a known prompt token count."""
+            return [1, 2, 3]
+
+    def fake_apply_chat_template(**kwargs: object) -> str:
+        """Record prompt rendering kwargs for audio assertions."""
+        captured_template_kwargs.update(kwargs)
+        return "rendered audio prompt"
+
+    def fake_stream_generate(*_args: object, **kwargs: object) -> Iterator[SimpleNamespace]:
+        """Record streaming kwargs for audio assertions."""
+        captured_stream_kwargs.update(kwargs)
+        yield SimpleNamespace(text="ok")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(config=SimpleNamespace(model_type="qwen3_omni", audio_token_id=258881)),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=lambda *_args, **_kwargs: SimpleNamespace(text="unused"),
+        apply_chat_template=fake_apply_chat_template,
+        stream_generate=fake_stream_generate,
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/audio-chat", alias="chat"),
+        runtime=runtime,
+    )
+    message = Message(
+        role="user",
+        content=[
+            AudioPathContentPart(audio_path="/tmp/audio.wav"),
+            TextContentPart(text="summarize the audio"),
+        ],
+    )
+
+    assert list(chat.stream_chat([message])) == ["ok"]
+    assert captured_template_kwargs["num_audios"] == 1
+    assert captured_stream_kwargs["audio"] == ["/tmp/audio.wav"]
+    assert captured_stream_kwargs["image"] is None
+    assert captured_stream_kwargs["prefill_step_size"] is None
+
+
 def test_mlx_chat_rejects_multimodal_prompt_over_context_limit() -> None:
     """Provably oversized MLX-VLM multimodal prompts should fail before generation."""
     from track.contracts import AiModel, Message
