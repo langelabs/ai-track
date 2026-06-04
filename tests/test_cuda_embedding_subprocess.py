@@ -95,6 +95,48 @@ def test_subprocess_embedding_model_records_worker_exit_before_ready() -> None:
     assert "exitcode=-9" in str(model.load_error)
 
 
+def test_subprocess_embedding_model_accepts_loading_messages_before_ready() -> None:
+    """Worker loading progress should not be treated as an unsupported startup payload."""
+    from track.inference.embedding.subprocess import SubprocessEmbeddingModel
+
+    process = FakeEmbeddingWorkerProcess()
+    connection = FakeEmbeddingWorkerConnection(
+        [
+            {"type": "loading", "phase": "artifact_resolution", "status": "started"},
+            {"type": "loading", "phase": "sentence_transformer", "status": "started"},
+            {"type": "ready"},
+        ]
+    )
+
+    model = SubprocessEmbeddingModel(
+        "google/embeddinggemma-300m",
+        process_factory=lambda **_kwargs: (process, connection),
+    )
+
+    assert model.load_error is None
+    assert model.last_load_phase == "sentence_transformer"
+
+
+def test_subprocess_embedding_model_timeout_includes_last_loading_phase() -> None:
+    """Timeouts should report the last worker phase observed before silence."""
+    from track.inference.embedding.subprocess import SubprocessEmbeddingModel
+
+    process = FakeEmbeddingWorkerProcess()
+    connection = FakeEmbeddingWorkerConnection(
+        [{"type": "loading", "phase": "sentence_transformer.to(cuda)", "status": "started"}]
+    )
+
+    model = SubprocessEmbeddingModel(
+        "google/embeddinggemma-300m",
+        process_factory=lambda **_kwargs: (process, connection),
+        startup_timeout_seconds=0.01,
+    )
+
+    assert model.load_error is not None
+    assert "timed out while reporting ready" in str(model.load_error)
+    assert "last_phase=sentence_transformer.to(cuda)" in str(model.load_error)
+
+
 def test_subprocess_embedding_model_returns_worker_embeddings(tmp_path: Path) -> None:
     """Successful worker responses should be returned to embedding callers."""
     from track.inference.embedding.subprocess import SubprocessEmbeddingModel

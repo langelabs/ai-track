@@ -30,9 +30,11 @@ class _FakeEmbeddingModelFactory:
         """Store the fake model or optional load failure."""
         self.model = model if model is not None else SimpleNamespace(eval=lambda: None)
         self.error = error
+        self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def from_pretrained(self, *_args: object, **_kwargs: object) -> object:
         """Return a fake model or raise the configured failure."""
+        self.calls.append((_args, _kwargs))
         if self.error is not None:
             raise self.error
         return self.model
@@ -182,10 +184,135 @@ def test_transformers_embedding_prefers_sentence_transformer_loader(
 
     assert model.load_error is None
     assert sentence_transformer.calls == [
-        (("google/embeddinggemma-300m",), {"token": "hf_secret_should_not_leak", "device": "cuda"})
+        (("google/embeddinggemma-300m",), {"token": "hf_secret_should_not_leak"})
     ]
     assert auto_model.model is not model.model
-    assert sentence_model.to_calls == []
+    assert sentence_model.to_calls == ["cuda"]
+
+
+def test_transformers_embedding_reports_sentence_transformer_cuda_transfer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SentenceTransformer CUDA transfer failures should name the transfer phase."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    class FailingSentenceTransformerModel(_FakeSentenceTransformerModel):
+        """Raise during explicit CUDA transfer."""
+
+        def to(self, device: str) -> "FailingSentenceTransformerModel":
+            """Raise when the SentenceTransformer is moved to CUDA."""
+            raise RuntimeError(f"cannot move to {device}")
+
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+        sentence_transformer=_FakeSentenceTransformerFactory(model=FailingSentenceTransformerModel()),
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+
+    assert model.load_error is not None
+    message = str(model.load_error)
+    assert "during sentence_transformer.to(cuda)" in message
+    assert "cannot move to cuda" in message
+
+
+def test_transformers_embedding_sends_load_phase_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Embedding loads should emit safe phase events for worker progress reporting."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    events: list[dict[str, str]] = []
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+        sentence_transformer=_FakeSentenceTransformerFactory(),
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel("google/embeddinggemma-300m", on_load_event=events.append)
+
+    assert model.load_error is None
+    assert {"phase": "sentence_transformer", "status": "started"} in events
+    assert {"phase": "sentence_transformer.to(cuda)", "status": "finished"} in events
+
+
+def test_transformers_embedding_repairs_required_embeddinggemma_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EmbeddingGemma should require key ST artifact files before loading from cache."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    captured_required_files: tuple[str, ...] | None = None
+
+    def fake_resolve_model_location(*_args: object, **kwargs: object) -> str:
+        """Capture required artifact files passed into model resolution."""
+        nonlocal captured_required_files
+        captured_required_files = tuple(kwargs["required_files"])
+        return str(tmp_path)
+
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+        sentence_transformer=_FakeSentenceTransformerFactory(),
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+    monkeypatch.setattr(embedding_transformers, "resolve_model_location", fake_resolve_model_location)
+
+    model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+
+    assert model.load_error is None
+    assert captured_required_files is not None
+    assert "modules.json" in captured_required_files
+    assert "2_Dense/model.safetensors" in captured_required_files
+    assert "3_Dense/model.safetensors" in captured_required_files
+
+
+def test_transformers_embedding_sentence_transformer_metadata_failure_is_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ST metadata should prevent hiding SentenceTransformer load failures behind AutoModel fallback."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    (tmp_path / "modules.json").write_text("{}", encoding="utf-8")
+    auto_model = _FakeEmbeddingModelFactory()
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=auto_model,
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+        sentence_transformer=_FakeSentenceTransformerFactory(error=RuntimeError("sentence transformer exploded")),
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+    monkeypatch.setattr(embedding_transformers, "resolve_model_location", lambda *_args, **_kwargs: str(tmp_path))
+
+    model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+
+    assert model.load_error is not None
+    assert "sentence transformer exploded" in str(model.load_error)
+    assert auto_model.calls == []
 
 
 def test_transformers_embedding_falls_back_when_sentence_transformer_is_unavailable(
@@ -217,6 +344,41 @@ def test_transformers_embedding_falls_back_when_sentence_transformer_is_unavaila
     monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
 
     model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+
+    assert model.load_error is None
+    assert isinstance(model.model, FakeAutoModel)
+
+
+def test_transformers_embedding_non_st_checkpoint_can_fallback_after_sentence_transformer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-ST checkpoints should still keep the AutoModel compatibility fallback."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    class FakeAutoModel:
+        """Provide successful ``to`` and ``eval`` methods."""
+
+        def to(self, device: str) -> "FakeAutoModel":
+            """Return self after receiving the selected device."""
+            assert device == "cuda"
+            return self
+
+        def eval(self) -> None:
+            """Simulate eval mode setup."""
+
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(model=FakeAutoModel()),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+        sentence_transformer=_FakeSentenceTransformerFactory(error=RuntimeError("not a sentence transformer")),
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel("example/plain-transformer-embedding")
 
     assert model.load_error is None
     assert isinstance(model.model, FakeAutoModel)

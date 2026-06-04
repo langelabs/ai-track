@@ -40,7 +40,14 @@ def _embedding_worker_main(
     embedding_prompt_name: str | None,
 ) -> None:
     """Run the CUDA embedding backend inside an isolated worker process."""
+    connection.send({"type": "loading", "phase": "worker_import", "status": "started"})
     from track.inference.embedding.transformers import TransformersEmbeddingModel
+
+    connection.send({"type": "loading", "phase": "worker_import", "status": "finished"})
+
+    def send_load_event(event: dict[str, str]) -> None:
+        """Forward safe embedding load progress events to the parent process."""
+        connection.send({"type": "loading", **event})
 
     try:
         model = TransformersEmbeddingModel(
@@ -48,6 +55,7 @@ def _embedding_worker_main(
             hf_token=hf_token,
             model_path=model_path,
             embedding_prompt_name=embedding_prompt_name,
+            on_load_event=send_load_event,
         )
         if model.load_error is not None:
             connection.send(
@@ -142,6 +150,7 @@ class SubprocessEmbeddingModel(BaseEmbeddingModel):
         self.model_path = Path(model_path) if model_path is not None else None
         self.embedding_prompt_name = embedding_prompt_name
         self.load_error: Exception | None = None
+        self.last_load_phase: str | None = None
         self._timeout_seconds = startup_timeout_seconds
         self._closed = False
         self._process, self._connection = process_factory(
@@ -177,13 +186,20 @@ class SubprocessEmbeddingModel(BaseEmbeddingModel):
         error = message.get("error", "unknown error")
         return RuntimeError(f"CUDA embedding {prefix} during {phase} for {self.model_id}: {error}")
 
+    def _note_loading_message(self, message: EmbeddingWorkerMessage) -> None:
+        """Record the latest worker loading phase."""
+        phase = message.get("phase")
+        if isinstance(phase, str):
+            self.last_load_phase = phase
+
     def _receive_worker_message(self, phase: str) -> EmbeddingWorkerMessage:
         """Receive one message from the worker or raise if it exits first."""
         deadline = time.monotonic() + self._timeout_seconds
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise RuntimeError(f"CUDA embedding worker timed out while {phase} for {self.model_id}")
+                last_phase = f"; last_phase={self.last_load_phase}" if self.last_load_phase is not None else ""
+                raise RuntimeError(f"CUDA embedding worker timed out while {phase} for {self.model_id}{last_phase}")
             if self._connection.poll(min(0.1, remaining)):
                 try:
                     message = self._connection.recv()
@@ -193,6 +209,9 @@ class SubprocessEmbeddingModel(BaseEmbeddingModel):
                     raise RuntimeError(
                         f"CUDA embedding worker sent an unsupported message while {phase} for {self.model_id}"
                     )
+                if message.get("type") == "loading":
+                    self._note_loading_message(message)
+                    continue
                 return message
             if not self._process.is_alive():
                 raise self._worker_exit_error(phase)
