@@ -24,6 +24,7 @@ class TransformersEmbeddingRuntime:
     auto_model: Any
     auto_tokenizer: Any
     torch: Any
+    sentence_transformer: Any | None = None
 
 
 def _load_transformers_runtime() -> TransformersEmbeddingRuntime:
@@ -34,7 +35,16 @@ def _load_transformers_runtime() -> TransformersEmbeddingRuntime:
     except ModuleNotFoundError as exc:
         missing = build_missing_optional_dependency_loader("transformers", exc)
         return TransformersEmbeddingRuntime(auto_model=missing, auto_tokenizer=missing, torch=missing)
-    return TransformersEmbeddingRuntime(auto_model=AutoModel, auto_tokenizer=AutoTokenizer, torch=torch)
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ModuleNotFoundError:
+        SentenceTransformer = None
+    return TransformersEmbeddingRuntime(
+        auto_model=AutoModel,
+        auto_tokenizer=AutoTokenizer,
+        torch=torch,
+        sentence_transformer=SentenceTransformer,
+    )
 
 
 def _mean_pool_embeddings(last_hidden_state: Any, attention_mask: Any | None) -> Any:
@@ -47,6 +57,15 @@ def _mean_pool_embeddings(last_hidden_state: Any, attention_mask: Any | None) ->
     return summed / counts
 
 
+def _normalize_embedding_result(embeddings: Any, *, single_input: bool) -> list[list[float]] | list[float]:
+    """Convert backend embedding payloads into the public list-based shape."""
+    normalized = embeddings.tolist() if hasattr(embeddings, "tolist") else embeddings
+    if single_input:
+        row = normalized[0] if isinstance(normalized, list) and normalized and isinstance(normalized[0], (list, tuple)) else normalized
+        return [float(value) for value in row]
+    return [[float(value) for value in row] for row in normalized]
+
+
 class TransformersEmbeddingModel(BaseEmbeddingModel):
     """Wrap Hugging Face embedding models behind the local embedding interface."""
 
@@ -57,14 +76,17 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         model_id: str,
         hf_token: str | None = None,
         model_path: str | Path | None = None,
+        embedding_prompt_name: str | None = None,
     ) -> None:
         """Store configuration and load the embedding model lazily."""
         self.model_id = model_id
         self.hf_token = hf_token
         self.model_path = Path(model_path) if model_path is not None else None
+        self.embedding_prompt_name = embedding_prompt_name
         self.load_error: Exception | None = None
         self.tokenizer: Any | None = None
         self.model: Any | None = None
+        self._uses_sentence_transformer = False
         self.device = "cpu"
         self.runtime = _load_transformers_runtime()
         try:
@@ -116,8 +138,30 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
             return
         self.device = "cuda" if self.runtime.torch.cuda.is_available() else "cpu"
 
-    def _build_model(self) -> tuple[Any, Any]:
+    def _build_model(self) -> tuple[Any | None, Any]:
         """Construct the tokenizer and model for the configured checkpoint."""
+        load_kwargs: dict[str, Any] = {"cache_dir": str(self.model_path) if self.model_path is not None else None}
+        if self.hf_token is not None:
+            load_kwargs["token"] = self.hf_token
+        model_location = self._run_load_phase(
+            "artifact_resolution",
+            lambda: resolve_model_location(self.model_id, self.model_path, self.hf_token),
+        )
+        sentence_transformer = self.runtime.sentence_transformer
+        if sentence_transformer is not None:
+            try:
+                model = self._run_load_phase(
+                    "sentence_transformer",
+                    lambda: sentence_transformer(
+                        model_location,
+                        token=self.hf_token,
+                        device=self.device,
+                    ),
+                )
+                self._uses_sentence_transformer = True
+                return None, model
+            except Exception:
+                self._uses_sentence_transformer = False
         if not hasattr(self.runtime.auto_model, "from_pretrained") or not hasattr(self.runtime.auto_tokenizer, "from_pretrained"):
             diagnostics = collect_embedding_load_diagnostics(runtime=self.runtime, device=self.device)
             raise build_embedding_load_error(
@@ -126,13 +170,6 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
                 diagnostics=diagnostics,
                 error=RuntimeError("transformers is not available."),
             )
-        load_kwargs: dict[str, Any] = {"cache_dir": str(self.model_path) if self.model_path is not None else None}
-        if self.hf_token is not None:
-            load_kwargs["token"] = self.hf_token
-        model_location = self._run_load_phase(
-            "artifact_resolution",
-            lambda: resolve_model_location(self.model_id, self.model_path, self.hf_token),
-        )
         tokenizer = self._run_load_phase(
             "tokenizer",
             lambda: self.runtime.auto_tokenizer.from_pretrained(model_location, **load_kwargs),
@@ -149,33 +186,38 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
 
     def _ensure_ready(self) -> None:
         """Reject calls when the embedding backend failed to load."""
-        if self.model is None or self.tokenizer is None:
+        if self.model is None or (self.tokenizer is None and not self._uses_sentence_transformer):
             raise RuntimeError("Transformers embeddings are not available in the current environment.") from self.load_error
+
+    def _embed_with_sentence_transformer(self, texts: list[str], *, single_input: bool) -> list[list[float]] | list[float]:
+        """Generate embeddings with a loaded SentenceTransformer model."""
+        assert self.model is not None
+        if self.embedding_prompt_name == "query" and callable(getattr(self.model, "encode_query", None)):
+            query_input = texts[0] if single_input else texts
+            return _normalize_embedding_result(self.model.encode_query(query_input), single_input=single_input)
+        if self.embedding_prompt_name == "document" and callable(getattr(self.model, "encode_document", None)):
+            return _normalize_embedding_result(self.model.encode_document(texts), single_input=single_input)
+        embeddings = self.model.encode(texts)
+        return _normalize_embedding_result(embeddings, single_input=single_input)
 
     def _embed_with_model(self, content: str | list[str]) -> list[list[float]] | list[float]:
         """Generate embeddings using a Hugging Face transformer model."""
         assert self.model is not None
-        assert self.tokenizer is not None
         if isinstance(content, str):
             texts = [content]
             single_input = True
         else:
             texts = content
             single_input = False
+        if self._uses_sentence_transformer:
+            return self._embed_with_sentence_transformer(texts, single_input=single_input)
+        assert self.tokenizer is not None
         if callable(getattr(self.model, "encode", None)):
             embeddings = self.model.encode(texts)
-            if single_input and isinstance(embeddings, list) and embeddings and isinstance(embeddings[0], (list, tuple)):
-                embeddings = embeddings[0]
-            if single_input:
-                return [float(value) for value in embeddings]
-            return [[float(value) for value in row] for row in embeddings]
+            return _normalize_embedding_result(embeddings, single_input=single_input)
         if callable(getattr(self.model, "embed", None)):
             embeddings = self.model.embed(texts)
-            if single_input and isinstance(embeddings, list) and embeddings and isinstance(embeddings[0], (list, tuple)):
-                embeddings = embeddings[0]
-            if single_input:
-                return [float(value) for value in embeddings]
-            return [[float(value) for value in row] for row in embeddings]
+            return _normalize_embedding_result(embeddings, single_input=single_input)
         try:
             import torch
         except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime path
@@ -193,11 +235,7 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
             embedding_rows = pooled
         else:
             embedding_rows = _mean_pool_embeddings(last_hidden_state, inputs.get("attention_mask"))
-        normalized_rows = embedding_rows.tolist() if hasattr(embedding_rows, "tolist") else embedding_rows
-        if single_input:
-            row = normalized_rows[0] if isinstance(normalized_rows, list) and normalized_rows else normalized_rows
-            return [float(value) for value in row]
-        return [[float(value) for value in row] for row in normalized_rows]
+        return _normalize_embedding_result(embedding_rows, single_input=single_input)
 
     def embed(self, content: str | list[str]) -> list[list[float]] | list[float]:
         """Generate embeddings with the configured Hugging Face model."""

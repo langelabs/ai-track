@@ -37,6 +37,7 @@ def _embedding_worker_main(
     model_id: str,
     hf_token: str | None,
     model_path: str | None,
+    embedding_prompt_name: str | None,
 ) -> None:
     """Run the CUDA embedding backend inside an isolated worker process."""
     from track.inference.embedding.transformers import TransformersEmbeddingModel
@@ -46,6 +47,7 @@ def _embedding_worker_main(
             model_id=model_id,
             hf_token=hf_token,
             model_path=model_path,
+            embedding_prompt_name=embedding_prompt_name,
         )
         if model.load_error is not None:
             connection.send(
@@ -98,6 +100,7 @@ def _start_embedding_worker(
     model_id: str,
     hf_token: str | None,
     model_path: Path | None,
+    embedding_prompt_name: str | None,
 ) -> tuple[EmbeddingWorkerProcess, Connection]:
     """Start one isolated embedding worker process and return its parent connection."""
     context = multiprocessing.get_context("spawn")
@@ -109,6 +112,7 @@ def _start_embedding_worker(
             model_id,
             hf_token,
             str(model_path) if model_path is not None else None,
+            embedding_prompt_name,
         ),
         daemon=True,
     )
@@ -127,6 +131,7 @@ class SubprocessEmbeddingModel(BaseEmbeddingModel):
         model_id: str,
         hf_token: str | None = None,
         model_path: str | Path | None = None,
+        embedding_prompt_name: str | None = None,
         *,
         process_factory: EmbeddingProcessFactory = _start_embedding_worker,
         startup_timeout_seconds: float = DEFAULT_WORKER_TIMEOUT_SECONDS,
@@ -135,6 +140,7 @@ class SubprocessEmbeddingModel(BaseEmbeddingModel):
         self.model_id = model_id
         self.hf_token = hf_token
         self.model_path = Path(model_path) if model_path is not None else None
+        self.embedding_prompt_name = embedding_prompt_name
         self.load_error: Exception | None = None
         self._timeout_seconds = startup_timeout_seconds
         self._closed = False
@@ -142,6 +148,7 @@ class SubprocessEmbeddingModel(BaseEmbeddingModel):
             model_id=model_id,
             hf_token=hf_token,
             model_path=self.model_path,
+            embedding_prompt_name=embedding_prompt_name,
         )
         try:
             message = self._receive_worker_message("reporting ready")
@@ -210,6 +217,8 @@ class SubprocessEmbeddingModel(BaseEmbeddingModel):
             raise
         if message.get("type") == "result":
             embedding = message.get("embedding")
+            if embedding is None:
+                raise RuntimeError("CUDA embedding worker returned an empty embedding payload.")
             if isinstance(content, str):
                 return [float(value) for value in embedding]
             return [[float(value) for value in row] for row in embedding]

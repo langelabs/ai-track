@@ -19,6 +19,7 @@ class InferenceConfig(BaseModel):
     verbose: bool | None = None
     trust_remote_code: bool | None = None
     embedding_batch_size: int | None = None
+    embedding_prompt_name: Literal["query", "document"] | None = None
 
 
 class AiModelCapabilities(BaseModel):

@@ -38,6 +38,54 @@ class _FakeEmbeddingModelFactory:
         return self.model
 
 
+class _FakeSentenceTransformerFactory:
+    """Capture SentenceTransformer load calls and provide a fake encoder."""
+
+    def __init__(self, *, model: object | None = None, error: Exception | None = None) -> None:
+        """Store the fake sentence transformer or optional load failure."""
+        self.model = model if model is not None else _FakeSentenceTransformerModel()
+        self.error = error
+        self.calls: list[tuple[object, dict[str, object]]] = []
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        """Return a fake SentenceTransformer model or raise the configured failure."""
+        self.calls.append((args, kwargs))
+        if self.error is not None:
+            raise self.error
+        return self.model
+
+
+class _FakeSentenceTransformerModel:
+    """Provide deterministic sentence-transformers embedding methods."""
+
+    def __init__(self) -> None:
+        """Prepare call recording."""
+        self.to_calls: list[str] = []
+        self.encode_calls: list[list[str]] = []
+        self.encode_query_calls: list[str] = []
+        self.encode_document_calls: list[list[str]] = []
+
+    def to(self, device: str) -> "_FakeSentenceTransformerModel":
+        """Record the selected device and return self."""
+        self.to_calls.append(device)
+        return self
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        """Return generic embeddings for each text."""
+        self.encode_calls.append(texts)
+        return [[float(len(text))] for text in texts]
+
+    def encode_query(self, text: str) -> list[float]:
+        """Return one query embedding."""
+        self.encode_query_calls.append(text)
+        return [11.0]
+
+    def encode_document(self, texts: list[str]) -> list[list[float]]:
+        """Return document embeddings for each text."""
+        self.encode_document_calls.append(texts)
+        return [[22.0] for _text in texts]
+
+
 class _FakeCudaDiagnostics:
     """Provide deterministic CUDA metadata for embedding diagnostics tests."""
 
@@ -104,6 +152,153 @@ def test_transformers_embedding_load_logs_successful_phases(
     assert any("phase=model" in message for message in messages)
     assert any("phase=model.to(cuda)" in message for message in messages)
     assert any("phase=model.eval" in message for message in messages)
+
+
+def test_transformers_embedding_prefers_sentence_transformer_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CUDA embeddings should prefer SentenceTransformer when it is available."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    sentence_model = _FakeSentenceTransformerModel()
+    sentence_transformer = _FakeSentenceTransformerFactory(model=sentence_model)
+    auto_model = _FakeEmbeddingModelFactory()
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=auto_model,
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+        sentence_transformer=sentence_transformer,
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel(
+        "google/embeddinggemma-300m",
+        hf_token="hf_secret_should_not_leak",
+    )
+
+    assert model.load_error is None
+    assert sentence_transformer.calls == [
+        (("google/embeddinggemma-300m",), {"token": "hf_secret_should_not_leak", "device": "cuda"})
+    ]
+    assert auto_model.model is not model.model
+    assert sentence_model.to_calls == []
+
+
+def test_transformers_embedding_falls_back_when_sentence_transformer_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CUDA embeddings should keep the existing AutoModel path when ST is unavailable."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    class FakeAutoModel:
+        """Provide successful ``to`` and ``eval`` methods."""
+
+        def to(self, device: str) -> "FakeAutoModel":
+            """Return self after receiving the selected device."""
+            assert device == "cuda"
+            return self
+
+        def eval(self) -> None:
+            """Simulate eval mode setup."""
+
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(model=FakeAutoModel()),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+
+    assert model.load_error is None
+    assert isinstance(model.model, FakeAutoModel)
+
+
+def test_transformers_embedding_uses_query_prompt_encoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Query prompt mode should call SentenceTransformer query encoding."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    sentence_model = _FakeSentenceTransformerModel()
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+        sentence_transformer=_FakeSentenceTransformerFactory(model=sentence_model),
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel("google/embeddinggemma-300m", embedding_prompt_name="query")
+
+    assert model.embed("search text") == [11.0]
+    assert sentence_model.encode_query_calls == ["search text"]
+    assert sentence_model.encode_calls == []
+
+
+def test_transformers_embedding_uses_document_prompt_encoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Document prompt mode should call SentenceTransformer document encoding."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    sentence_model = _FakeSentenceTransformerModel()
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+        sentence_transformer=_FakeSentenceTransformerFactory(model=sentence_model),
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel("google/embeddinggemma-300m", embedding_prompt_name="document")
+
+    assert model.embed(["first", "second"]) == [[22.0], [22.0]]
+    assert sentence_model.encode_document_calls == [["first", "second"]]
+    assert sentence_model.encode_calls == []
+
+
+def test_transformers_embedding_uses_generic_sentence_transformer_encode_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default prompt mode should preserve generic embedding behavior."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    sentence_model = _FakeSentenceTransformerModel()
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+        sentence_transformer=_FakeSentenceTransformerFactory(model=sentence_model),
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+
+    assert model.embed("hello") == [5.0]
+    assert sentence_model.encode_calls == [["hello"]]
+    assert sentence_model.encode_query_calls == []
+    assert sentence_model.encode_document_calls == []
 
 
 def test_transformers_embedding_tokenizer_failure_names_phase(monkeypatch: pytest.MonkeyPatch) -> None:
