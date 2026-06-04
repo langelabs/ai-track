@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
+import logging
 from typing import Any, TypeVar
 
 from track.contracts import BaseEmbeddingModel
@@ -88,6 +88,21 @@ def _has_sentence_transformer_metadata(model_id: str, model_location: str, requi
     if required_files is not None:
         return True
     return (Path(model_location) / "modules.json").is_file()
+
+
+def _requires_sentence_transformer(model_id: str, model_location: str, required_files: tuple[str, ...] | None) -> bool:
+    """Return whether the checkpoint must load through SentenceTransformer."""
+    return _has_sentence_transformer_metadata(model_id, model_location, required_files)
+
+
+def _sentence_transformer_unavailable_error() -> RuntimeError:
+    """Return the strict SentenceTransformer dependency error."""
+    return RuntimeError("SentenceTransformer is not available for this embedding checkpoint.")
+
+
+def _raise_sentence_transformer_unavailable() -> None:
+    """Raise the strict SentenceTransformer dependency error."""
+    raise _sentence_transformer_unavailable_error()
 
 
 class TransformersEmbeddingModel(BaseEmbeddingModel):
@@ -192,8 +207,11 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
             ),
         )
         expects_sentence_transformer = _has_sentence_transformer_metadata(self.model_id, model_location, required_files)
+        requires_sentence_transformer = _requires_sentence_transformer(self.model_id, model_location, required_files)
         sentence_transformer = self.runtime.sentence_transformer
-        if sentence_transformer is not None:
+        if requires_sentence_transformer and sentence_transformer is None:
+            self._run_load_phase("sentence_transformer", _raise_sentence_transformer_unavailable)
+        if expects_sentence_transformer and sentence_transformer is not None:
             try:
                 model = self._run_load_phase(
                     "sentence_transformer",

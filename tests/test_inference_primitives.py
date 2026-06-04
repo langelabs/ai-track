@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import builtins
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 import tempfile
 from pathlib import Path
 import tomllib
@@ -176,7 +176,7 @@ def test_mlx_chat_multimodal_prompt_disables_chunked_prefill() -> None:
             """Return a long prompt token sequence."""
             return list(range(5293))
 
-    def fake_generate(*_args: object, prefill_step_size: int | None = None, **kwargs: object) -> SimpleNamespace:
+    def fake_generate(*_args: object, prefill_step_size: object = "missing", **kwargs: object) -> SimpleNamespace:
         """Record generation kwargs for the assertion."""
         captured_kwargs.update(kwargs)
         captured_kwargs["prefill_step_size"] = prefill_step_size
@@ -217,7 +217,7 @@ def test_mlx_chat_prefill_is_disabled_for_non_gemma_multimodal_models() -> None:
             """Return a token sequence for a non-Gemma multimodal model."""
             return [1, 2, 3]
 
-    def fake_generate(*_args: object, prefill_step_size: int | None = None, **kwargs: object) -> SimpleNamespace:
+    def fake_generate(*_args: object, prefill_step_size: object = "missing", **kwargs: object) -> SimpleNamespace:
         """Record generation kwargs for the assertion."""
         captured_kwargs.update(kwargs)
         captured_kwargs["prefill_step_size"] = prefill_step_size
@@ -274,6 +274,94 @@ def test_mlx_chat_text_only_does_not_force_prefill() -> None:
 
     assert chat.chat([Message.user("hello")]).text() == "ok"
     assert "prefill_step_size" not in captured_kwargs
+
+
+def test_mlx_chat_large_shape_sensitive_text_prompt_disables_chunked_prefill() -> None:
+    """Large Gemma-style text prompts should avoid MLX-VLM chunked prefill shape crashes."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeTokenizer:
+        model_max_length = 131072
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return the representative text-only prompt length from the macOS crash."""
+            return list(range(2297))
+
+    def fake_generate(*_args: object, prefill_step_size: int | None = None, **kwargs: object) -> SimpleNamespace:
+        """Record generation kwargs for the assertion."""
+        captured_kwargs.update(kwargs)
+        captured_kwargs["prefill_step_size"] = prefill_step_size
+        return SimpleNamespace(text="ok")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    model_type="gemma4",
+                    image_token_id=258880,
+                    audio_token_id=258881,
+                    text_config=SimpleNamespace(hidden_size_per_layer_input=256),
+                )
+            ),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=fake_generate,
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/gemma-4-e4b-it-8bit", alias="chat"),
+        runtime=runtime,
+    )
+
+    assert chat.chat([Message.user("hello")]).text() == "ok"
+    assert captured_kwargs["prefill_step_size"] is None
+
+
+def test_mlx_chat_large_shape_sensitive_stream_prompt_disables_chunked_prefill() -> None:
+    """Streaming large Gemma-style text prompts should use the same prefill mitigation."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeTokenizer:
+        model_max_length = 131072
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return the representative text-only prompt length from the macOS crash."""
+            return list(range(2297))
+
+    def fake_stream_generate(*_args: object, prefill_step_size: object = "missing", **kwargs: object) -> Iterator[object]:
+        """Record streaming generation kwargs for the assertion."""
+        captured_kwargs.update(kwargs)
+        captured_kwargs["prefill_step_size"] = prefill_step_size
+        yield SimpleNamespace(text="ok")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    model_type="gemma4",
+                    image_token_id=258880,
+                    text_config=SimpleNamespace(hidden_size_per_layer_input=256),
+                )
+            ),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=lambda *_args, **_kwargs: SimpleNamespace(text="unused"),
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+        stream_generate=fake_stream_generate,
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/gemma-4-e4b-it-8bit", alias="chat"),
+        runtime=runtime,
+    )
+
+    assert list(chat.stream_chat([Message.user("hello")])) == ["ok"]
+    assert captured_kwargs["prefill_step_size"] is None
 
 
 def test_mlx_chat_callable_without_prefill_support_still_runs() -> None:

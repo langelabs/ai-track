@@ -26,6 +26,16 @@ def create_embedding_model(
         from track.inference.embedding.subprocess import SubprocessEmbeddingModel
 
         inference_config = config.inference_config
+        startup_timeout_seconds = (
+            inference_config.cuda_embedding_startup_timeout_seconds
+            if inference_config is not None
+            else None
+        )
+        startup_timeout_kwargs = (
+            {"startup_timeout_seconds": startup_timeout_seconds}
+            if startup_timeout_seconds is not None
+            else {}
+        )
         return SubprocessEmbeddingModel(
             model_id=config.model_id,
             hf_token=hf_token,
@@ -35,5 +45,6 @@ def create_embedding_model(
                 if inference_config is not None
                 else None
             ),
+            **startup_timeout_kwargs,
         )
     raise ValueError(f"Unsupported embedding backend: {backend}")

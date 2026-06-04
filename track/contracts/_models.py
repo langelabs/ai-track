@@ -3,10 +3,21 @@
 from __future__ import annotations
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 AiProviderName = Literal["local", "open-router", "openai", "google", "anthropic", "mistral"]
+LlamaCppVisionChatFormat = Literal[
+    "llava-1-5",
+    "llava-1-6",
+    "moondream2",
+    "nanollava",
+    "llama-3-vision-alpha",
+    "minicpm-v-2.6",
+    "qwen2.5-vl",
+    "gemma4",
+    "mtmd",
+]
 
 
 class InferenceConfig(BaseModel):
@@ -20,6 +31,10 @@ class InferenceConfig(BaseModel):
     trust_remote_code: bool | None = None
     embedding_batch_size: int | None = None
     embedding_prompt_name: Literal["query", "document"] | None = None
+    cuda_embedding_startup_timeout_seconds: float | None = Field(default=None, gt=0)
+    llama_cpp_vision_chat_format: LlamaCppVisionChatFormat | None = None
+    llama_cpp_mmproj_path: str | None = None
+    llama_cpp_n_ctx: int | None = Field(default=None, gt=0)
 
 
 class AiModelCapabilities(BaseModel):

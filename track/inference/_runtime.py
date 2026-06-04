@@ -15,12 +15,14 @@ from track.contracts import (
     AiModel,
     AiModelCapabilities,
     AudioGenerationResult,
+    AudioPathContentPart,
     BaseAudioModel,
     BaseChatLLM,
     BaseEmbeddingModel,
     BaseImageGenerationModel,
     BaseTranscriptionModel,
     ImageGenerationCallback,
+    ImagePathContentPart,
     Message,
     SupportsOpenAICompatibility,
     TranscriptionResult,
@@ -115,6 +117,24 @@ def _coerce_embedding_batch_rows(embeddings: list[list[float]] | list[float], ex
             f"Embedding backend returned {len(rows)} rows for a batch of {expected_rows} input texts."
         )
     return rows
+
+
+def _messages_require_image_input(messages: list[Message]) -> bool:
+    """Return whether any chat message carries an image input part."""
+    return any(
+        isinstance(part, ImagePathContentPart)
+        for message in messages
+        for part in message.content
+    )
+
+
+def _messages_require_audio_input(messages: list[Message]) -> bool:
+    """Return whether any chat message carries an audio input part."""
+    return any(
+        isinstance(part, AudioPathContentPart)
+        for message in messages
+        for part in message.content
+    )
 
 
 def _detect_backend_with_probe() -> tuple[Literal["cuda", "mlx"] | None, TorchCudaProbe | None]:
@@ -217,7 +237,28 @@ class LocalRuntime(SupportsOpenAICompatibility):
 
     def preflight_required_components(self) -> None:
         """Run lightweight required-component checks before downloading artifacts."""
-        pass
+        capabilities = self.model.capabilities
+        if self.backend != "cuda" or capabilities is None:
+            return
+        if capabilities.audio_input:
+            raise self._unsupported_cuda_multimodal_chat_error("audio input")
+
+    def _unsupported_cuda_multimodal_chat_error(self, modality: str) -> RuntimeError:
+        """Return an actionable error for CUDA chat modalities that are not implemented."""
+        return RuntimeError(
+            f"CUDA chat backend does not support {modality} for model_id={self.model.model_id}. "
+            "Use a compatible vision/audio chat backend or configure this model without unsupported "
+            "multimodal input capabilities."
+        )
+
+    def _raise_if_cuda_multimodal_chat_request(self, messages: list[Message], chat_llm: BaseChatLLM) -> None:
+        """Reject image or audio chat requests before text-only CUDA adapters render them."""
+        if self.backend != "cuda":
+            return
+        if _messages_require_image_input(messages) and not bool(getattr(chat_llm, "supports_image_input", False)):
+            raise self._unsupported_cuda_multimodal_chat_error("image input")
+        if _messages_require_audio_input(messages):
+            raise self._unsupported_cuda_multimodal_chat_error("audio input")
 
     def _component_backend(self, component_name: LocalRuntimeComponent) -> object | None:
         """Return the instantiated backend object for one runtime component."""
@@ -570,12 +611,16 @@ class LocalRuntime(SupportsOpenAICompatibility):
     def chat(self, messages: list[Message]) -> Message:
         """Delegate chat generation to the selected backend."""
         with self._operation_lock:
-            return self._require_chat_llm().chat(messages)
+            chat_llm = self._require_chat_llm()
+            self._raise_if_cuda_multimodal_chat_request(messages, chat_llm)
+            return chat_llm.chat(messages)
 
     def stream_chat(self, messages: list[Message]) -> Iterator[str]:
         """Delegate token streaming to the selected chat backend."""
         with self._operation_lock:
-            yield from self._require_chat_llm().stream_chat(messages)
+            chat_llm = self._require_chat_llm()
+            self._raise_if_cuda_multimodal_chat_request(messages, chat_llm)
+            yield from chat_llm.stream_chat(messages)
 
     def generate_image(
         self,

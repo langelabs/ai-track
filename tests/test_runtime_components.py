@@ -4,7 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from track.contracts import AiModel, AiModelCapabilities, InferenceConfig
+from track.contracts import (
+    AiModel,
+    AiModelCapabilities,
+    AudioPathContentPart,
+    InferenceConfig,
+    Message,
+    TextContentPart,
+)
 from track.inference._runtime import (
     LocalRuntime,
     _coerce_embedding_batch_rows,
@@ -102,6 +109,64 @@ def test_local_runtime_missing_backend_error_includes_cuda_probe_detail() -> Non
     assert "uv sync --extra cuda" in message
 
 
+@pytest.mark.parametrize(
+    ("capabilities", "expected_modality"),
+    [
+        (AiModelCapabilities(audio_input=True, text_output=True), "audio input"),
+    ],
+)
+def test_local_runtime_rejects_declared_audio_chat_on_cuda(
+    capabilities: AiModelCapabilities,
+    expected_modality: str,
+) -> None:
+    """CUDA chat preflight should reject declared audio input before downloads."""
+    runtime = LocalRuntime(_model_with_capabilities(capabilities), backend="cuda")
+
+    with pytest.raises(RuntimeError, match=expected_modality):
+        runtime.preflight_required_components()
+
+
+def test_local_runtime_allows_cuda_image_input_with_image_capable_backend() -> None:
+    """CUDA chat should allow image requests when the loaded backend supports them."""
+    runtime = LocalRuntime(_model_with_capabilities(None), backend="cuda")
+    runtime.chat_llm = SimpleNamespace(
+        chat=lambda _messages: Message.assistant("ok"),
+        load_error=None,
+        supports_image_input=True,
+    )
+
+    assert runtime.chat([Message.user("describe", image_path="/tmp/image.png")]).text() == "ok"
+
+
+def test_local_runtime_rejects_cuda_image_input_without_image_capable_backend() -> None:
+    """CUDA chat should fail actionably for image requests when the backend is text-only."""
+    runtime = LocalRuntime(_model_with_capabilities(None), backend="cuda")
+    runtime.chat_llm = SimpleNamespace(
+        chat=lambda _messages: Message.assistant("unexpected"),
+        load_error=None,
+        supports_image_input=False,
+    )
+
+    with pytest.raises(RuntimeError, match="CUDA chat backend does not support image input"):
+        runtime.chat([Message.user("describe", image_path="/tmp/image.png")])
+
+
+def test_local_runtime_rejects_audio_cuda_chat_requests_before_backend_call() -> None:
+    """CUDA chat should fail actionably for audio requests before text-only adapters render them."""
+    runtime = LocalRuntime(_model_with_capabilities(None), backend="cuda")
+    runtime.chat_llm = SimpleNamespace(chat=lambda _messages: Message.assistant("unexpected"), load_error=None)
+    message = Message(
+        role="user",
+        content=[
+            AudioPathContentPart(audio_path="/tmp/audio.wav"),
+            TextContentPart(text="transcribe"),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="CUDA chat backend does not support audio input"):
+        runtime.chat([message])
+
+
 def test_local_runtime_embedding_batch_size_uses_config_and_rejects_invalid_values() -> None:
     """Embedding batch size should default safely and reject non-positive overrides."""
     default_runtime = LocalRuntime(_model_with_capabilities(None), backend="cuda")
@@ -128,4 +193,3 @@ def test_local_runtime_embedding_batch_size_uses_config_and_rejects_invalid_valu
     assert configured_runtime._embedding_batch_size() == 3
     with pytest.raises(RuntimeError, match="greater than 0"):
         invalid_runtime._embedding_batch_size()
-

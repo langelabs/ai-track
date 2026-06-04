@@ -44,6 +44,7 @@ class MLXPromptDiagnostics:
     shape_features: tuple[str, ...]
     prefill_step_size: int | None
     prefill_supported: bool
+    disable_chunked_prefill: bool
 
     @property
     def is_multimodal(self) -> bool:
@@ -71,6 +72,7 @@ _SHAPE_SENSITIVE_METHODS = (
     "prepare_inputs_for_generation",
 )
 _MAX_REASONABLE_CONTEXT_LIMIT = 1_000_000_000
+_MLX_CHUNKED_PREFILL_ALIGNMENT_LIMIT = 2048
 
 
 def _load_mlx_runtime() -> MLXRuntime:
@@ -238,6 +240,25 @@ def _shape_sensitive_features(model: Any, processor: Any) -> tuple[str, ...]:
             if callable(getattr(source, method_name, None)):
                 features.append(f"{source_name}.{method_name}")
     return tuple(dict.fromkeys(features))
+
+
+def _should_disable_chunked_prefill(
+    *,
+    prefill_supported: bool,
+    prompt_token_count: int | None,
+    image_count: int,
+    audio_count: int,
+    shape_features: tuple[str, ...],
+) -> bool:
+    """Return whether MLX-VLM chunked prefill should be disabled for prompt alignment."""
+    if not prefill_supported or not shape_features:
+        return False
+    if image_count > 0 or audio_count > 0:
+        return True
+    return (
+        prompt_token_count is not None
+        and prompt_token_count > _MLX_CHUNKED_PREFILL_ALIGNMENT_LIMIT
+    )
 
 
 def _is_mlx_broadcast_shape_error(error: ValueError) -> bool:
@@ -432,14 +453,22 @@ class MLXChatLLM(BaseChatLLM):
         prefill_supported = _supports_keyword(generator, "prefill_step_size")
         image_count = 1 if image_path is not None else 0
         audio_count = 1 if audio_path is not None else 0
+        shape_features = _shape_sensitive_features(model, processor)
         return MLXPromptDiagnostics(
             prompt_token_count=prompt_token_count,
             context_limit=_resolve_context_limit(model, processor),
             image_count=image_count,
             audio_count=audio_count,
-            shape_features=_shape_sensitive_features(model, processor),
+            shape_features=shape_features,
             prefill_step_size=None,
             prefill_supported=prefill_supported,
+            disable_chunked_prefill=_should_disable_chunked_prefill(
+                prefill_supported=prefill_supported,
+                prompt_token_count=prompt_token_count,
+                image_count=image_count,
+                audio_count=audio_count,
+                shape_features=shape_features,
+            ),
         )
 
     def _validate_prompt_diagnostics(self, diagnostics: MLXPromptDiagnostics) -> None:
@@ -474,7 +503,7 @@ class MLXChatLLM(BaseChatLLM):
         }
         if diagnostics.prefill_step_size is not None:
             kwargs["prefill_step_size"] = diagnostics.prefill_step_size
-        elif diagnostics.prefill_supported and diagnostics.is_multimodal:
+        elif diagnostics.disable_chunked_prefill:
             kwargs["prefill_step_size"] = None
         return kwargs
 
@@ -482,15 +511,28 @@ class MLXChatLLM(BaseChatLLM):
         """Build an actionable Track error for MLX-VLM prompt/input shape mismatches."""
         prompt_tokens = diagnostics.prompt_token_count if diagnostics.prompt_token_count is not None else "unknown"
         context_limit = diagnostics.context_limit if diagnostics.context_limit is not None else "unknown"
-        prefill = diagnostics.prefill_step_size if diagnostics.prefill_step_size is not None else "not set"
+        if diagnostics.disable_chunked_prefill:
+            prefill = "disabled"
+        elif diagnostics.prefill_step_size is not None:
+            prefill = diagnostics.prefill_step_size
+        elif not diagnostics.prefill_supported:
+            prefill = "unsupported"
+        else:
+            prefill = "not set"
         features = ", ".join(diagnostics.shape_features) if diagnostics.shape_features else "none detected"
+        prompt_kind = "multimodal prompt" if diagnostics.is_multimodal else "text prompt"
+        mismatch_detail = (
+            "rendered text prompt and the image-expanded prompt sequence"
+            if diagnostics.is_multimodal
+            else "rendered text prompt and the shape-sensitive per-layer prompt sequence"
+        )
         return RuntimeError(
-            "MLX-VLM cannot align the rendered multimodal prompt and model input tensors for "
+            f"MLX-VLM cannot align the rendered {prompt_kind} and model input tensors for "
             f"model '{self.model_id}' on backend 'mlx'. "
             f"prompt_tokens={prompt_tokens}; context_limit={context_limit}; "
             f"image_count={diagnostics.image_count}; audio_count={diagnostics.audio_count}; "
             f"prefill_step_size={prefill}; prefill_supported={diagnostics.prefill_supported}; "
             f"shape_features={features}. The MLX-VLM runtime reported a mismatch between the "
-            "rendered text prompt and the image-expanded prompt sequence. Update the installed "
+            f"{mismatch_detail}. Update the installed "
             "MLX-VLM runtime or switch this model to a compatible vision backend."
         )
