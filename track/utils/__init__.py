@@ -12,6 +12,7 @@ from .chat import (
     extract_message_image_paths,
     render_content_parts,
     render_prompt_messages,
+    strip_nonfinal_mlx_attachments,
     validate_mlx_messages,
 )
 from .downloads import configured_local_model_ids, download_configured_models, download_local_model_artifact
@@ -42,4 +43,5 @@ __all__ = [
     "render_prompt_messages",
     "resolve_model_location",
     "validate_mlx_messages",
+    "strip_nonfinal_mlx_attachments",
 ]

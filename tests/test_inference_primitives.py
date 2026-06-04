@@ -472,6 +472,61 @@ def test_mlx_chat_passes_native_audio_input_to_generation() -> None:
     assert captured_generate_kwargs["prefill_step_size"] is None
 
 
+def test_mlx_chat_cleans_stale_audio_from_history_before_generation() -> None:
+    """MLX chat should remove stale audio attachments from earlier user messages."""
+    from track.contracts import AiModel, AudioPathContentPart, Message, TextContentPart
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    captured_template_kwargs: dict[str, object] = {}
+    captured_generate_kwargs: dict[str, object] = {}
+
+    class FakeTokenizer:
+        model_max_length = 4096
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return a known prompt token count."""
+            return [1, 2, 3]
+
+    def fake_apply_chat_template(**kwargs: object) -> str:
+        """Record prompt rendering kwargs for stale-audio assertions."""
+        captured_template_kwargs.update(kwargs)
+        return "rendered text prompt"
+
+    def fake_generate(*_args: object, **kwargs: object) -> SimpleNamespace:
+        """Record generation kwargs for stale-audio assertions."""
+        captured_generate_kwargs.update(kwargs)
+        return SimpleNamespace(text="ok")
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(config=SimpleNamespace(model_type="qwen3_omni", audio_token_id=258881)),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=fake_generate,
+        apply_chat_template=fake_apply_chat_template,
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(provider="local", model_id="mlx-community/audio-chat", alias="chat"),
+        runtime=runtime,
+    )
+    messages = [
+        Message(
+            role="user",
+            content=[
+                AudioPathContentPart(audio_path="/tmp/stale.wav"),
+                TextContentPart(text="summarize this audio"),
+            ],
+        ),
+        Message.assistant("summary"),
+        Message.user("thanks"),
+    ]
+
+    assert chat.chat(messages).text() == "ok"
+    assert captured_template_kwargs["num_audios"] == 0
+    assert captured_template_kwargs["prompt"][0]["content"] == [{"type": "text", "text": "summarize this audio"}]
+    assert captured_generate_kwargs["audio"] is None
+
+
 def test_mlx_stream_chat_passes_native_audio_input_to_generation() -> None:
     """Streaming MLX chat should forward native audio paths like non-streaming chat."""
     from track.contracts import AiModel, AudioPathContentPart, Message, TextContentPart

@@ -16,6 +16,7 @@ from track.utils import (
     extract_conversation_image_path,
     render_prompt_messages,
     resolve_model_location,
+    strip_nonfinal_mlx_attachments,
     validate_mlx_messages,
 )
 from track.utils.runtime import build_missing_optional_dependency_loader, configure_hugging_face_access
@@ -416,11 +417,11 @@ class MLXChatLLM(BaseChatLLM):
 
     def _build_prompt(self, messages: list[Message]) -> tuple[Any, str | None, str | None]:
         """Validate messages and construct the prompt payload for generation."""
-        normalized_messages = ensure_user_first_after_system(messages)
+        normalized_messages = strip_nonfinal_mlx_attachments(ensure_user_first_after_system(messages))
         validate_mlx_messages(normalized_messages)
         prompt_messages = render_prompt_messages(normalized_messages)
-        image_path = extract_conversation_image_path(messages)
-        audio_path = extract_conversation_audio_path(messages)
+        image_path = extract_conversation_image_path(normalized_messages)
+        audio_path = extract_conversation_audio_path(normalized_messages)
         logger.debug(
             "MLXChatLLM._build_prompt prepared %d prompt messages for model_id=%s",
             len(prompt_messages),

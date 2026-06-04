@@ -41,6 +41,23 @@ def ensure_user_first_after_system(messages: list[Message]) -> list[Message]:
     return [messages[0], placeholder, *messages[1:]]
 
 
+def strip_nonfinal_mlx_attachments(messages: list[Message]) -> list[Message]:
+    """Remove unsupported MLX attachments from every message except the final turn."""
+    if not messages:
+        return messages
+    cleaned_messages: list[Message] = []
+    final_index = len(messages) - 1
+    for index, message in enumerate(messages):
+        if index == final_index:
+            cleaned_messages.append(message)
+            continue
+        text_parts = [part for part in message.content if isinstance(part, TextContentPart)]
+        if not text_parts:
+            text_parts = [TextContentPart(text="")]
+        cleaned_messages.append(Message(role=message.role, content=text_parts))
+    return cleaned_messages
+
+
 def validate_mlx_messages(messages: list[Message]) -> None:
     """Reject unsupported prototype message shapes before MLX generation."""
     if not messages:
