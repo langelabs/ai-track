@@ -15,6 +15,16 @@ from track.utils.runtime import build_missing_optional_dependency_loader, config
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+LoadEventCallback = Callable[[dict[str, str]], None]
+EMBEDDINGGEMMA_REQUIRED_FILES = (
+    "modules.json",
+    "config_sentence_transformers.json",
+    "sentence_bert_config.json",
+    "model.safetensors",
+    "tokenizer.model",
+    "2_Dense/model.safetensors",
+    "3_Dense/model.safetensors",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +76,20 @@ def _normalize_embedding_result(embeddings: Any, *, single_input: bool) -> list[
     return [[float(value) for value in row] for row in normalized]
 
 
+def _required_sentence_transformer_files(model_id: str) -> tuple[str, ...] | None:
+    """Return required local files for known SentenceTransformer checkpoints."""
+    if model_id.lower() == "google/embeddinggemma-300m":
+        return EMBEDDINGGEMMA_REQUIRED_FILES
+    return None
+
+
+def _has_sentence_transformer_metadata(model_id: str, model_location: str, required_files: tuple[str, ...] | None) -> bool:
+    """Return whether a checkpoint should be loaded through SentenceTransformer."""
+    if required_files is not None:
+        return True
+    return (Path(model_location) / "modules.json").is_file()
+
+
 class TransformersEmbeddingModel(BaseEmbeddingModel):
     """Wrap Hugging Face embedding models behind the local embedding interface."""
 
@@ -77,6 +101,7 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         hf_token: str | None = None,
         model_path: str | Path | None = None,
         embedding_prompt_name: str | None = None,
+        on_load_event: LoadEventCallback | None = None,
     ) -> None:
         """Store configuration and load the embedding model lazily."""
         self.model_id = model_id
@@ -87,6 +112,7 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         self.tokenizer: Any | None = None
         self.model: Any | None = None
         self._uses_sentence_transformer = False
+        self._on_load_event = on_load_event
         self.device = "cpu"
         self.runtime = _load_transformers_runtime()
         try:
@@ -96,8 +122,18 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         except Exception as exc:  # pragma: no cover - optional runtime path
             self.load_error = exc
 
+    def _emit_load_event(self, phase: str, status: str) -> None:
+        """Emit a safe load event for subprocess progress reporting."""
+        if self._on_load_event is None:
+            return
+        try:
+            self._on_load_event({"phase": phase, "status": status})
+        except Exception:
+            logger.debug("CUDA embedding load event callback failed", exc_info=True)
+
     def _run_load_phase(self, phase: str, callback: Callable[[], T]) -> T:
         """Run one embedding load phase with safe diagnostics and logging."""
+        self._emit_load_event(phase, "started")
         diagnostics = collect_embedding_load_diagnostics(runtime=self.runtime, device=self.device)
         logger.info(
             "CUDA embedding load phase started model_id=%s phase=%s %s",
@@ -108,6 +144,7 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         try:
             result = callback()
         except Exception as exc:
+            self._emit_load_event(phase, "failed")
             diagnostics = collect_embedding_load_diagnostics(runtime=self.runtime, device=self.device)
             logger.warning(
                 "CUDA embedding load phase failed model_id=%s phase=%s error=%s %s",
@@ -129,6 +166,7 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
             phase,
             diagnostics.format(),
         )
+        self._emit_load_event(phase, "finished")
         return result
 
     def _configure_device(self) -> None:
@@ -143,10 +181,17 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         load_kwargs: dict[str, Any] = {"cache_dir": str(self.model_path) if self.model_path is not None else None}
         if self.hf_token is not None:
             load_kwargs["token"] = self.hf_token
+        required_files = _required_sentence_transformer_files(self.model_id)
         model_location = self._run_load_phase(
             "artifact_resolution",
-            lambda: resolve_model_location(self.model_id, self.model_path, self.hf_token),
+            lambda: resolve_model_location(
+                self.model_id,
+                self.model_path,
+                self.hf_token,
+                required_files=required_files,
+            ),
         )
+        expects_sentence_transformer = _has_sentence_transformer_metadata(self.model_id, model_location, required_files)
         sentence_transformer = self.runtime.sentence_transformer
         if sentence_transformer is not None:
             try:
@@ -155,13 +200,19 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
                     lambda: sentence_transformer(
                         model_location,
                         token=self.hf_token,
-                        device=self.device,
                     ),
                 )
+                if hasattr(model, "to"):
+                    model = self._run_load_phase(
+                        f"sentence_transformer.to({self.device})",
+                        lambda: model.to(device=self.device),
+                    )
                 self._uses_sentence_transformer = True
                 return None, model
-            except Exception:
+            except Exception as exc:
                 self._uses_sentence_transformer = False
+                if expects_sentence_transformer:
+                    raise exc
         if not hasattr(self.runtime.auto_model, "from_pretrained") or not hasattr(self.runtime.auto_tokenizer, "from_pretrained"):
             diagnostics = collect_embedding_load_diagnostics(runtime=self.runtime, device=self.device)
             raise build_embedding_load_error(

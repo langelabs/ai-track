@@ -99,6 +99,60 @@ def test_model_storage_size_and_resolution_progress(tmp_path: Path, monkeypatch:
     assert progress_updates[-1] is None
 
 
+def test_model_storage_repairs_partial_cached_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Required artifact checks should resume incomplete cached model directories."""
+    partial_dir = tmp_path / "google/embeddinggemma-300m"
+    partial_dir.mkdir(parents=True)
+    (partial_dir / "modules.json").write_text("{}", encoding="utf-8")
+    download_calls: list[tuple[str, Path, str | None]] = []
+
+    def fake_snapshot_download(model_id: str, *, local_dir: Path, token: str | None) -> str:
+        """Record that the partial artifact was repaired through snapshot download."""
+        download_calls.append((model_id, local_dir, token))
+        (local_dir / "model.safetensors").write_bytes(b"weights")
+        return str(local_dir)
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(snapshot_download=fake_snapshot_download))
+
+    location = resolve_model_location(
+        "google/embeddinggemma-300m",
+        tmp_path,
+        hf_token="hf-secret",
+        required_files=("modules.json", "model.safetensors"),
+    )
+
+    assert location == str(partial_dir)
+    assert download_calls == [("google/embeddinggemma-300m", partial_dir, "hf-secret")]
+
+
+def test_model_storage_accepts_complete_required_cached_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Complete required artifact sets should avoid unnecessary snapshot downloads."""
+    artifact_dir = tmp_path / "google/embeddinggemma-300m"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "modules.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "model.safetensors").write_bytes(b"weights")
+
+    def fake_snapshot_download(*_args: object, **_kwargs: object) -> str:
+        """Fail if complete artifacts still trigger a download."""
+        raise AssertionError("snapshot_download should not run for complete required artifacts")
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(snapshot_download=fake_snapshot_download))
+
+    location = resolve_model_location(
+        "google/embeddinggemma-300m",
+        tmp_path,
+        required_files=("modules.json", "model.safetensors"),
+    )
+
+    assert location == str(artifact_dir)
+
+
 def test_runtime_helpers_configure_hf_token_and_lazy_missing_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
     """Runtime helpers should set Hugging Face env vars and defer optional dependency errors."""
     monkeypatch.delenv("HF_TOKEN", raising=False)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 
@@ -25,12 +25,20 @@ def get_model_artifact_size(model_id: str, model_path: str | Path | None) -> int
     return sum(path.stat().st_size for path in artifact_dir.rglob("*") if path.is_file())
 
 
+def _has_required_files(artifact_dir: Path, required_files: Iterable[str] | None) -> bool:
+    """Return whether every required artifact file exists under ``artifact_dir``."""
+    if required_files is None:
+        return True
+    return all((artifact_dir / required_file).is_file() for required_file in required_files)
+
+
 def resolve_model_location(
     model_id: str,
     model_path: str | Path | None = None,
     hf_token: str | None = None,
     *,
     on_progress: Callable[[float | None], None] | None = None,
+    required_files: Iterable[str] | None = None,
 ) -> str:
     """Return a loadable model location, syncing with the Hub when available."""
     if model_path is None:
@@ -39,7 +47,7 @@ def resolve_model_location(
     root = Path(model_path)
     local_dir = root / model_id
     local_dir.parent.mkdir(parents=True, exist_ok=True)
-    if local_dir.is_dir():
+    if local_dir.is_dir() and _has_required_files(local_dir, required_files):
         if on_progress is not None:
             on_progress(None)
         return str(local_dir)
