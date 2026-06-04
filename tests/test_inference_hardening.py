@@ -146,7 +146,7 @@ def test_transformers_embedding_load_logs_successful_phases(
     monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
 
     with caplog.at_level("INFO", logger="track.inference.embedding.transformers"):
-        model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+        model = TransformersEmbeddingModel("example/plain-transformer-embedding")
 
     assert model.load_error is None
     messages = [record.getMessage() for record in caplog.records]
@@ -315,10 +315,10 @@ def test_transformers_embedding_sentence_transformer_metadata_failure_is_fatal(
     assert auto_model.calls == []
 
 
-def test_transformers_embedding_falls_back_when_sentence_transformer_is_unavailable(
+def test_transformers_embedding_embeddinggemma_fails_when_sentence_transformer_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CUDA embeddings should keep the existing AutoModel path when ST is unavailable."""
+    """EmbeddingGemma should not hide missing SentenceTransformer behind AutoModel fallback."""
     from track.inference.embedding import transformers as embedding_transformers
     from track.inference.embedding.transformers import (
         TransformersEmbeddingModel,
@@ -344,6 +344,41 @@ def test_transformers_embedding_falls_back_when_sentence_transformer_is_unavaila
     monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
 
     model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+
+    assert model.load_error is not None
+    assert "SentenceTransformer is not available" in str(model.load_error)
+    assert runtime.auto_model.calls == []
+
+
+def test_transformers_embedding_plain_checkpoint_falls_back_when_sentence_transformer_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plain transformer checkpoints should keep the AutoModel path when ST is unavailable."""
+    from track.inference.embedding import transformers as embedding_transformers
+    from track.inference.embedding.transformers import (
+        TransformersEmbeddingModel,
+        TransformersEmbeddingRuntime,
+    )
+
+    class FakeAutoModel:
+        """Provide successful ``to`` and ``eval`` methods."""
+
+        def to(self, device: str) -> "FakeAutoModel":
+            """Return self after receiving the selected device."""
+            assert device == "cuda"
+            return self
+
+        def eval(self) -> None:
+            """Simulate eval mode setup."""
+
+    runtime = TransformersEmbeddingRuntime(
+        auto_model=_FakeEmbeddingModelFactory(model=FakeAutoModel()),
+        auto_tokenizer=_FakeEmbeddingTokenizerFactory(),
+        torch=_FakeTorchDiagnostics,
+    )
+    monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
+
+    model = TransformersEmbeddingModel("example/plain-transformer-embedding")
 
     assert model.load_error is None
     assert isinstance(model.model, FakeAutoModel)
@@ -478,12 +513,12 @@ def test_transformers_embedding_tokenizer_failure_names_phase(monkeypatch: pytes
     )
     monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
 
-    model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+    model = TransformersEmbeddingModel("example/plain-transformer-embedding")
 
     assert model.load_error is not None
     message = str(model.load_error)
     assert "during tokenizer" in message
-    assert "google/embeddinggemma-300m" in message
+    assert "example/plain-transformer-embedding" in message
     assert "tokenizer exploded" in message
 
 
@@ -502,7 +537,7 @@ def test_transformers_embedding_model_failure_names_phase(monkeypatch: pytest.Mo
     )
     monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
 
-    model = TransformersEmbeddingModel("google/embeddinggemma-300m")
+    model = TransformersEmbeddingModel("example/plain-transformer-embedding")
 
     assert model.load_error is not None
     message = str(model.load_error)
@@ -535,7 +570,7 @@ def test_transformers_embedding_cuda_move_failure_includes_safe_diagnostics(
     monkeypatch.setattr(embedding_transformers, "_load_transformers_runtime", lambda: runtime)
 
     model = TransformersEmbeddingModel(
-        "google/embeddinggemma-300m",
+        "example/plain-transformer-embedding",
         hf_token="hf_secret_should_not_leak",
     )
 
@@ -603,6 +638,145 @@ def test_llama_cpp_chat_uses_first_sorted_gguf_and_chat_completion(tmp_path: Pat
     assert captured_chat["top_p"] == 0.8
 
 
+def test_llama_cpp_chat_uses_vision_handler_and_renders_image_messages(tmp_path: Path) -> None:
+    """llama.cpp vision chat should pass a projector handler and OpenAI-style image parts."""
+    from track.contracts import AiModel, InferenceConfig, Message
+    from track.inference.chat.llama_cpp import LlamaCppChatLLM, LlamaCppRuntime
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    model_file = repo_dir / "model.gguf"
+    projector_file = repo_dir / "mmproj-model-f16.gguf"
+    image_file = tmp_path / "image.png"
+    model_file.write_bytes(b"gguf")
+    projector_file.write_bytes(b"mmproj")
+    image_file.write_bytes(b"image")
+    captured_init: dict[str, object] = {}
+    captured_chat: dict[str, object] = {}
+    captured_handler: dict[str, object] = {}
+
+    class FakeLlama:
+        """Capture llama.cpp model construction and chat completion calls."""
+
+        def __init__(self, **kwargs: object) -> None:
+            """Store constructor kwargs for assertion."""
+            captured_init.update(kwargs)
+
+        def create_chat_completion(self, **kwargs: object) -> dict[str, object]:
+            """Return one assistant message for the captured chat completion request."""
+            captured_chat.update(kwargs)
+            return {"choices": [{"message": {"content": "described"}}]}
+
+    class FakeGemma4ChatHandler:
+        """Capture projector path passed to a llama.cpp vision handler."""
+
+        def __init__(self, **kwargs: object) -> None:
+            """Store handler kwargs for assertion."""
+            captured_handler.update(kwargs)
+
+    runtime = LlamaCppRuntime(llama=FakeLlama, gemma4_chat_handler=FakeGemma4ChatHandler)
+    model = AiModel(
+        provider="local",
+        model_id=str(repo_dir),
+        alias="vision",
+        inference_config=InferenceConfig(llama_cpp_vision_chat_format="gemma4"),
+    )
+    chat = LlamaCppChatLLM(model_config=model, runtime=runtime)
+
+    response = chat.chat([Message.user("describe", image_path=str(image_file))])
+
+    assert response.text() == "described"
+    assert chat.supports_image_input is True
+    assert captured_handler["clip_model_path"] == str(projector_file)
+    assert captured_init["chat_handler"].__class__ is FakeGemma4ChatHandler
+    assert captured_init["n_ctx"] == 4096
+    assert captured_chat["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": image_file.as_uri()}},
+                {"type": "text", "text": "describe"},
+            ],
+        }
+    ]
+
+
+def test_llama_cpp_chat_uses_configured_projector_and_context_size(tmp_path: Path) -> None:
+    """llama.cpp vision config should accept explicit projector and context settings."""
+    from track.contracts import AiModel, InferenceConfig
+    from track.inference.chat.llama_cpp import LlamaCppChatLLM, LlamaCppRuntime
+
+    model_file = tmp_path / "model.gguf"
+    projector_file = tmp_path / "custom-mmproj.gguf"
+    model_file.write_bytes(b"gguf")
+    projector_file.write_bytes(b"mmproj")
+    captured_init: dict[str, object] = {}
+    captured_handler: dict[str, object] = {}
+
+    class FakeLlama:
+        """Capture llama.cpp model construction."""
+
+        def __init__(self, **kwargs: object) -> None:
+            """Store constructor kwargs for assertion."""
+            captured_init.update(kwargs)
+
+    class FakeLlava15ChatHandler:
+        """Capture projector path passed to the handler."""
+
+        def __init__(self, **kwargs: object) -> None:
+            """Store handler kwargs for assertion."""
+            captured_handler.update(kwargs)
+
+    runtime = LlamaCppRuntime(llama=FakeLlama, llava15_chat_handler=FakeLlava15ChatHandler)
+    model = AiModel(
+        provider="local",
+        model_id=str(model_file),
+        alias="vision",
+        inference_config=InferenceConfig(
+            llama_cpp_vision_chat_format="llava-1-5",
+            llama_cpp_mmproj_path=str(projector_file),
+            llama_cpp_n_ctx=8192,
+        ),
+    )
+
+    LlamaCppChatLLM(model_config=model, runtime=runtime)
+
+    assert captured_handler["clip_model_path"] == str(projector_file)
+    assert captured_init["n_ctx"] == 8192
+
+
+def test_llama_cpp_chat_missing_projector_error_is_actionable(tmp_path: Path) -> None:
+    """llama.cpp vision setup should fail clearly when no projector can be found."""
+    from track.contracts import AiModel, InferenceConfig
+    from track.inference.chat.llama_cpp import LlamaCppChatLLM, LlamaCppRuntime
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / "model.gguf").write_bytes(b"gguf")
+
+    class FakeGemma4ChatHandler:
+        """Unused fake handler for vision runtime construction."""
+
+        def __init__(self, **_kwargs: object) -> None:
+            """Accept handler kwargs."""
+
+    runtime = LlamaCppRuntime(llama=lambda **_kwargs: object(), gemma4_chat_handler=FakeGemma4ChatHandler)
+    model = AiModel(
+        provider="local",
+        model_id=str(repo_dir),
+        alias="vision",
+        inference_config=InferenceConfig(llama_cpp_vision_chat_format="gemma4"),
+    )
+
+    chat = LlamaCppChatLLM(model_config=model, runtime=runtime)
+
+    assert chat.load_error is not None
+    message = str(chat.load_error)
+    assert "No llama.cpp multimodal projector" in message
+    assert "gemma4" in message
+    assert "HF_TOKEN" not in message
+
+
 def test_llama_cpp_chat_rejects_unexpected_backend_payloads(tmp_path: Path) -> None:
     """llama.cpp chat should raise instead of returning repr strings for unsupported payloads."""
     from track.contracts import AiModel, Message
@@ -623,7 +797,7 @@ def test_llama_cpp_chat_rejects_unexpected_backend_payloads(tmp_path: Path) -> N
 
 
 def test_llama_cpp_chat_rejects_non_text_messages(tmp_path: Path) -> None:
-    """llama.cpp chat should reject multimodal content before calling the backend."""
+    """llama.cpp text chat should reject image content before calling the backend."""
     from track.contracts import AiModel, Message
     from track.inference.chat.llama_cpp import LlamaCppChatLLM, LlamaCppRuntime
 
@@ -862,6 +1036,62 @@ def test_mlx_chat_multimodal_alignment_error_mentions_expanded_image_sequence() 
     message = str(error.value)
     assert "image-expanded prompt sequence" in message
     assert "Reduce chat history" not in message
+
+
+def test_mlx_chat_text_only_alignment_error_reports_prefill_state() -> None:
+    """Text-only MLX alignment errors should not describe the prompt as multimodal."""
+    from track.contracts import AiModel, Message
+    from track.inference.chat.mlx import MLXChatLLM, MLXRuntime
+
+    class FakeTokenizer:
+        model_max_length = 131072
+
+        def encode(self, _prompt: str) -> list[int]:
+            """Return the representative text-only prompt length from the macOS crash."""
+            return list(range(2297))
+
+    def fake_generate(
+        *_args: object,
+        prefill_step_size: int | None = None,
+        **_kwargs: object,
+    ) -> object:
+        """Raise the low-level text-only Gemma 4 broadcast failure."""
+        assert prefill_step_size is None
+        raise ValueError(
+            "[broadcast_shapes] Shapes (1,2048,42,256) and (1,2297,42,256) cannot be broadcast."
+        )
+
+    runtime = MLXRuntime(
+        load=lambda *_args, **_kwargs: (
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    model_type="gemma4",
+                    image_token_id=258880,
+                    audio_token_id=258881,
+                    text_config=SimpleNamespace(hidden_size_per_layer_input=256),
+                )
+            ),
+            SimpleNamespace(tokenizer=FakeTokenizer()),
+        ),
+        generate=fake_generate,
+        apply_chat_template=lambda **_kwargs: "rendered prompt",
+    )
+    chat = MLXChatLLM(
+        model_config=AiModel(
+            provider="local",
+            model_id="mlx-community/gemma-4-e4b-it-8bit",
+            alias="chat",
+        ),
+        runtime=runtime,
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        chat.chat([Message.user("hello")])
+
+    message = str(error.value)
+    assert "rendered text prompt" in message
+    assert "rendered multimodal prompt" not in message
+    assert "prefill_step_size=disabled" in message
 
 
 def test_mlx_chat_stream_wraps_multimodal_broadcast_shape_failures() -> None:

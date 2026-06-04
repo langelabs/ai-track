@@ -10,7 +10,7 @@ from typing import Any, Callable, Protocol
 
 from track.contracts import BaseEmbeddingModel
 
-DEFAULT_WORKER_TIMEOUT_SECONDS = 30.0
+DEFAULT_WORKER_TIMEOUT_SECONDS = 120.0
 EmbeddingWorkerMessage = dict[str, Any]
 
 
@@ -256,12 +256,14 @@ class SubprocessEmbeddingModel(BaseEmbeddingModel):
                     self._connection.send({"type": "shutdown"})
                 except Exception:
                     pass
-            try:
-                self._process.terminate()
-            except Exception:
-                pass
+                self._process.join(timeout=1.0)
+            if self._process.is_alive():
+                try:
+                    self._process.terminate()
+                except Exception:
+                    pass
+                self._process.join(timeout=1.0)
         finally:
-            self._process.join(timeout=1.0)
             self._connection.close()
 
     def __del__(self) -> None:

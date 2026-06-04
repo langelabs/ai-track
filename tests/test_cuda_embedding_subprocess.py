@@ -75,7 +75,7 @@ def test_subprocess_embedding_model_records_worker_load_failure() -> None:
     assert model.load_error is not None
     assert "worker failed during load" in str(model.load_error)
     assert "CUDA embedding model load failed" in str(model.load_error)
-    assert process.terminated is True
+    assert process.terminated is False
 
 
 def test_subprocess_embedding_model_records_worker_exit_before_ready() -> None:
@@ -189,6 +189,34 @@ def test_subprocess_embedding_model_passes_prompt_name_to_worker(tmp_path: Path)
 
     assert model.load_error is None
     assert captured_kwargs["embedding_prompt_name"] == "document"
+
+
+def test_subprocess_embedding_model_close_prefers_graceful_shutdown() -> None:
+    """Closing a responsive worker should not force terminate it after shutdown."""
+    from track.inference.embedding.subprocess import SubprocessEmbeddingModel
+
+    class GracefulWorkerProcess(FakeEmbeddingWorkerProcess):
+        """Mark the fake worker stopped when the parent joins it."""
+
+        def join(self, timeout: float | None = None) -> None:
+            """Record join and simulate a clean worker exit."""
+            super().join(timeout)
+            self._alive = False
+            self.exitcode = 0
+
+    process = GracefulWorkerProcess()
+    connection = FakeEmbeddingWorkerConnection([{"type": "ready"}])
+    model = SubprocessEmbeddingModel(
+        "google/embeddinggemma-300m",
+        process_factory=lambda **_kwargs: (process, connection),
+    )
+
+    model.close()
+
+    assert connection.sent == [{"type": "shutdown"}]
+    assert process.joined is True
+    assert process.terminated is False
+    assert connection.closed is True
 
 
 def test_subprocess_embedding_model_raises_when_worker_exits_during_embedding() -> None:
